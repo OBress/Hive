@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import './pages.css';
+import './landing.css';
 
 export const metadata: Metadata = {
   title: 'Hive',
