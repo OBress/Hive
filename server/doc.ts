@@ -41,7 +41,7 @@ export function setSession(id: string, patch: Partial<SessionView>): SessionView
   return next;
 }
 
-// Hooks for the optional MongoDB mirror.
+// Hooks for the optional Supabase mirror.
 export const mirrors: { step?: (s: Step) => void; chat?: (m: ChatMessage) => void } = {};
 
 export function addStep(s: Omit<Step, 'id' | 'n' | 'at'>): Step {

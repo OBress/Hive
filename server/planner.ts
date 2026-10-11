@@ -2,7 +2,7 @@ import type { AutonomyMode, Step, TaskSpec, TaskState } from '@hive/shared/types
 import { addChat, addStep, HttpError, serverWrite, sessions, setSession, setTaskState, steps, taskState, tasks } from './doc.ts';
 import { applyOps, readyTasks } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
-import { history } from './mongo.ts';
+import { history } from './history.ts';
 import { current, updateProject } from './projects.ts';
 import { schedule, specChanged, startTask } from './session.ts';
 import { resetRounds } from './verify.ts';

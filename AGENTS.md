@@ -42,8 +42,8 @@ hive/
     preview.ts            screenshots of the built app with the local Chrome/Edge (headless)
     planner.ts            chat (graph edits or cited answers), summarize()
     auth.ts               Supabase token verification, middleware, GitHub tokens in memory
-    store.ts              MongoDB storage (projects, docs, transcripts, epoch) when MONGODB_URI is set
-    mongo.ts              step/chat history in MongoDB + history reads
+    store.ts              Supabase storage (projects, docs, transcripts, epoch) when SUPABASE_SERVICE_ROLE_KEY is set
+    history.ts            step/chat history in Supabase + history reads
     routes.ts             all Express routes
     settings.ts           /api/config, doc epoch, push repo, env status
     smoke.ts              end-to-end demo check with LLM_PROVIDER=fake
@@ -89,13 +89,13 @@ Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and 
 
 ## Storage and hosting
 
-- **Local dev:** everything is files under `data/` (`pnpm reset` wipes it).
-- **Hosted (Railway, `server/Dockerfile`):** set `MONGODB_URI` and MongoDB holds the project list, each project's Y.Doc (saved every 2 s when it changed, and on SIGTERM), agent transcripts, the doc epoch and the step/chat history. The server refuses to start if `MONGODB_URI` is set but unreachable. The git workspaces and worktrees stay on disk: mount a Railway volume at `/app/data` so in-progress task branches survive redeploys (approved `main` is also on each project's GitHub repo).
-- Run `SMOKE_MONGODB_URI=mongodb://127.0.0.1:27017/hive_smoke pnpm --filter server smoke` to check the MongoDB path, including a restart on an empty disk. It drops that database first.
+- **Local dev without Supabase:** everything is files under `data/` (`pnpm reset` wipes it). With a Supabase URL configured, the server key and schema are required.
+- **Hosted (Railway, `server/Dockerfile`):** set `SUPABASE_SERVICE_ROLE_KEY` and Supabase holds the project list, each project's Y.Doc (saved every 2 s when it changed, and on SIGTERM), agent transcripts, the doc epoch and the step/chat history. The server refuses to start if `SUPABASE_SERVICE_ROLE_KEY` is set but unreachable. The git workspaces and worktrees stay on disk: mount a Railway volume at `/app/data` so in-progress task branches survive redeploys (approved `main` is also on each project's GitHub repo).
+- Run `pnpm --filter server smoke` for an isolated file-backed demo. Supabase storage is tested through the adapter tests; verify the live connection after applying `server/supabase.sql` and configuring the server key.
 
 ## Auth
 
-Supabase is used **only for sign-in** (GitHub OAuth) and account approval: the one table, `public.profiles` (`server/supabase-approvals.sql`, run once in the SQL editor), has an `approved` boolean per account. New accounts start unapproved; tick `approved` in the Table Editor to let someone in. Until then they get 403 on every non-GET call, an empty project list, no websocket, and a "waiting for approval" screen. When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set, every non-GET `/api/*` call needs `Authorization: Bearer <access token>` and the server replaces `by`/`from` with the verified GitHub login; the websocket requires the same token. The person's GitHub `provider_token` is kept in server memory only, for pushing on Approve. With Supabase unset, auth is off and `by`/`from` come from the body.
+Supabase handles GitHub sign-in, account approval (`profiles`), and storage (`hive_projects`, `hive_records`). Run `server/supabase.sql` before enabling storage. When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set, every non-GET `/api/*` call needs `Authorization: Bearer <access token>` and the server replaces `by`/`from` with the verified GitHub login; the websocket requires the same token. The person's GitHub `provider_token` is kept in server memory only, for pushing on Approve. With Supabase unset, auth is off and `by`/`from` come from the body.
 
 ## Endpoints
 
@@ -142,7 +142,7 @@ Errors are always `{error: "message"}` with a proper status code. Full examples 
 
 ## Dependencies
 
-`yjs`, `@hocuspocus/server`, `@hocuspocus/provider` (v4), `express` (v5), `@anthropic-ai/sdk`, `@supabase/supabase-js`, `mongodb`, `next` (v16), `react`, `react-dom` (v19), `qrcode`, plus TypeScript tooling and `vitest`. **Nothing else** without a human's OK: use Node built-ins and `fetch`. Call git with `child_process.execFile`, never a shell.
+`yjs`, `@hocuspocus/server`, `@hocuspocus/provider` (v4), `express` (v5), `@anthropic-ai/sdk`, `@supabase/supabase-js`, `next` (v16), `react`, `react-dom` (v19), `qrcode`, plus TypeScript tooling and `vitest`. **Nothing else** without a human's OK: use Node built-ins and `fetch`. Call git with `child_process.execFile`, never a shell.
 
 ## Secrets
 
@@ -161,4 +161,4 @@ We develop on Windows and demo on macOS. Use `path.join`, `fs.rmSync(..., {recur
 
 ## Cut order (if behind schedule)
 
-Cut in this order: MongoDB (local dev runs on files without it) → chat graph edits (keep catch-up answers) → GitHub push (keep the local merge) → hand off to a person (keep takeover and handback). Never cut the live stream, steer, or takeover and handback: they are the pitch.
+Cut in this order: hosted storage (local dev runs on files without it) → chat graph edits (keep catch-up answers) → GitHub push (keep the local merge) → hand off to a person (keep takeover and handback). Never cut the live stream, steer, or takeover and handback: they are the pitch.

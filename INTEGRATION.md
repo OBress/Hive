@@ -63,7 +63,7 @@ When auth is on (see below), `by`/`from` in bodies are ignored and replaced by t
 | POST /api/tasks/:id/handoff | `{by, to, note}` | `{summary}`; `to` is a person's name or `"agent"` |
 | GET /api/tasks/:id/summary | | `{summary, stepIds}` (regenerated) |
 | POST /api/chat | `{from, text}` | 202 `{id}`; Planner reply appears in `chat` (may also edit `tasks`) |
-| GET /api/history?taskId=stats | | `{steps: Step[], source: "mongo" \| "doc"}` |
+| GET /api/history?taskId=stats | | `{steps: Step[], source: "supabase" \| "doc"}` |
 | GET /api/preview | | `Preview` for main: `{kind: 'web', how, url}` (iframe it with `sandbox="allow-scripts allow-forms"`), `{kind: 'cli'}` or `{kind: 'none', why}`. A `server.js` app is restarted on its next request after a commit, so ask again after edit steps |
 | GET /api/tasks/:id/preview | | `Preview` for a task's folder (main's until it has one) |
 | POST /api/tasks/:id/cli | `{by, args?}` | 202; runs `node src/cli.js <args>` in the task's folder. Output streams to `terminal[id]`, then a `run` step. 409 if there is no `src/cli.js` |
@@ -92,7 +92,7 @@ POST /api/projects/url-shortener-f4e2/chat
 
 ## Auth (Supabase GitHub OAuth)
 
-Supabase is used only for sign-in. It is **on** when the server's `.env` has `SUPABASE_URL` and `SUPABASE_ANON_KEY`, and off otherwise (local dev, fake mode; names then come from `?name=`). The web app needs no env file: it reads the Supabase URL and anon key from `GET /api/config`. This is all wired in `web/lib/auth.ts`:
+Supabase handles sign-in, account approval, and persistent server storage. It is **on** when the server's `.env` has `SUPABASE_URL` and `SUPABASE_ANON_KEY`, and off otherwise (local dev, fake mode; names then come from `?name=`). The web app needs no env file: it reads the Supabase URL and anon key from `GET /api/config`. This is all wired in `web/lib/auth.ts`:
 
 1. `AuthGate` (in the root layout) shows "Sign in with GitHub" until there is a session: `signInWithOAuth({provider: 'github', options: {scopes: 'repo', redirectTo: location.href}})`.
 2. Every REST call sends `Authorization: Bearer <access_token>` (`authHeaders()`); the server replaces `by`/`from` with the GitHub login.
@@ -118,3 +118,11 @@ Each fresh start (first run or `pnpm reset`, which deletes every project) gets a
 - Call REST for every action: run, start, steer, takeover, file edits, handback, handoff, chat, approve.
 - Show `live[sessionId]` as the agent's streaming text and `steps` as the feed; `Step.diff` is a unified diff, `Step.test` has pass/fail counts.
 - Send the Supabase token on every call and on the websocket when auth is on.
+
+## Supabase storage setup
+
+Run `server/supabase.sql` in the Supabase SQL editor. Set `SUPABASE_SERVICE_ROLE_KEY` in the server's `.env` along with the existing URL and anon key, then restart. The server-only key must never be sent to a browser. `hive_projects` stores project metadata; `hive_records` stores docs, sessions, users, history, and the epoch. RLS and SQL grants deny browser access to those tables; the server uses its existing authentication and project-sharing behavior. Git workspaces still need persistent disk storage.
+
+New accounts have `profiles.approved = false`; approve them in Table Editor. Existing accounts without profiles are approved by the migration. Rerunning the SQL preserves existing approval decisions. Approval checks use the person's own access token; pending approvals are rechecked after 30 seconds and approved accounts after five minutes. Existing websocket connections are checked on connection, not continuously.
+
+If no Supabase URL or server key is configured, local fake/demo mode uses files. A configured Supabase URL without a server key stops startup with a setup error. Existing local files are not automatically imported. The smoke test uses its own temporary file storage and never resets the real database.
