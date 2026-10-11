@@ -35,6 +35,36 @@ export async function summarize(taskId: string): Promise<{ summary: string; step
   return { summary, stepIds: recent.map((s) => s.id) };
 }
 
+const STACK_SYSTEM = `You are Hive's architect. Someone, possibly not technical, describes a project; write the stack and spec doc that Hive's planner and coding agents will follow.
+
+Hive's coding agents build in a fixed workspace: Node.js ES modules ("type": "module"), Node built-ins only (no npm packages), code under src/, tests under test/ run with node --test. Choose everything within that: e.g. node:http for a web server or API, a JSON file or in-memory Map for storage, plain HTML/CSS/JS strings served by node:http for a UI, node:test and node:assert/strict for tests. Never suggest a database server, framework or package.
+
+Reply in Markdown only, with these sections and nothing else:
+# Stack and spec: <project name>
+## In plain words
+Two or three sentences a non-technical person understands: what gets built and how it works.
+## Stack
+Bullets: runtime, how it is served or used, storage, tests. Each with a one-line reason.
+## Modules
+One bullet per file under src/: \`src/<file>.js\`: what it does and what it exports.
+## Data
+The main records and their fields.
+## Interface
+The HTTP routes, CLI commands or functions people use, with inputs and outputs.
+## Build order
+A numbered list of small tasks, each naming its file, each testable on its own.
+## Open questions
+Up to three assumptions you made that the person may want to change.`;
+
+// A first draft of a project's stack / spec doc. The person reviews and edits it before the project is created.
+export async function stackDoc(name: string, goal: string, notes: string): Promise<string> {
+  const text = await generate({
+    model: models.planner, system: STACK_SYSTEM, maxTokens: 2500,
+    messages: [{ role: 'user', content: `Project: ${name}\nGoal: ${goal || '(none given)'}${notes ? `\nWhat they want changed in the last draft: ${notes}` : ''}` }],
+  });
+  return text.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/^```(?:markdown|md)?\n([\s\S]*?)\n```\s*$/, '$1').trim();
+}
+
 const PLANNER_SYSTEM = `You are Hive's planner. A team of people and coding agents shares one task graph; you see the tasks and the recent steps of every agent session.
 Reply with strict JSON only, no prose around it:
 {"reply": "...", "ops": [], "cites": []}
@@ -84,7 +114,7 @@ export async function chat(from: string, text: string) {
       return `- ${t.id} "${t.title}" deps=[${t.deps.join(', ')}] status=${st?.status ?? 'todo'} owner=${st?.owner.name ?? 'agent'}: ${t.spec}`;
     }).join('\n');
     const project = current();
-    const messages: Msg[] = [{ role: 'user', content: `Project: ${project.name}${project.goal ? ` (goal: ${project.goal})` : ''}\n\nTasks:\n${graph || '(none)'}\n\nRecent steps:\n${ordered.map(line).join('\n') || '(none)'}\n\n${from} asks: ${text}` }];
+    const messages: Msg[] = [{ role: 'user', content: `Project: ${project.name}${project.goal ? ` (goal: ${project.goal})` : ''}${project.stack ? `\n\nApproved stack and spec (plan tasks that follow it):\n${project.stack}` : ''}\n\nTasks:\n${graph || '(none)'}\n\nRecent steps:\n${ordered.map(line).join('\n') || '(none)'}\n\n${from} asks: ${text}` }];
 
     let out = extractJson(await generate({ model: models.planner, system: PLANNER_SYSTEM, messages, maxTokens: 2000 }));
     if (!out) {

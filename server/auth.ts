@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import type { NextFunction, Request, Response } from 'express';
+import { rememberUser } from './users.ts';
 
 export interface HiveUser { id: string; login: string; name: string; avatarUrl: string; githubId: string }
 type Verifier = (token: string) => Promise<HiveUser | null>;
@@ -53,6 +54,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
   const user = token ? await verifyToken(token) : null;
   if (user) {
     res.locals.user = user;
+    rememberUser({ login: user.login, name: user.name, avatarUrl: user.avatarUrl });
     res.locals.githubToken = githubTokens.get(user.id);
   }
   if (req.method === 'GET' || req.method === 'OPTIONS') return next();

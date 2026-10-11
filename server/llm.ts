@@ -183,6 +183,29 @@ function fakeAgent(messages: Msg[]): string {
 
 function fakePlanner(system: string, messages: Msg[]): string {
   const last = messages[messages.length - 1]?.content ?? '';
+  if (/architect/.test(system)) {
+    const name = /^Project: (.+)$/m.exec(last)?.[1] ?? 'Project';
+    return `# Stack and spec: ${name}
+## In plain words
+A small Node.js app with tests (written by the fake planner).
+## Stack
+- Node.js ES modules, built-ins only: nothing to install.
+- node:http serves it.
+- A JSON file stores the data.
+- node:test checks every module.
+## Modules
+- \`src/store.js\`: load and save records.
+- \`src/server.js\`: the HTTP routes.
+## Data
+- Item: id, title, createdAt.
+## Interface
+- GET /items, POST /items.
+## Build order
+1. src/store.js with tests.
+2. src/server.js with tests.
+## Open questions
+- None.`;
+  }
   if (!/strict JSON/i.test(system)) {
     return 'Done: wrote the module and its tests.\nLeft: nothing major.\nTried and failed: nothing.\nOpen questions: none.';
   }

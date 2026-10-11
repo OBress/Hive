@@ -80,6 +80,7 @@ export interface AgentContext {
   files: string[];
   lastTest?: { passed: number; failed: number };
   summary: string;
+  stack?: string;                     // the project's approved stack / spec doc
 }
 
 export function contextText(c: AgentContext): string {
@@ -87,6 +88,7 @@ export function contextText(c: AgentContext): string {
     `Task id: ${c.task.id}`,
     `Title: ${c.task.title}`,
     `Spec: ${c.task.spec}`,
+    c.stack ? `Project stack and spec (follow it where it applies to this task):\n${c.stack}` : '',
     c.deps.length ? `Finished dependencies (their code is in the workspace):\n${c.deps.map((d) => `- ${d.title}: ${d.spec}\n  Summary: ${d.summary || 'none'}`).join('\n')}` : '',
     `Files in the workspace: ${c.files.join(', ') || 'none'}`,
     `Test files <test/> will run: ${c.files.filter(isTestFile).join(', ') || 'none'}`,

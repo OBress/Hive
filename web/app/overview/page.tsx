@@ -8,7 +8,8 @@ import { usePeers, useUserName } from '@/lib/hive';
 import { useHive } from '@/lib/mock';
 import type { Decision } from '@/lib/types';
 import { connectRepo, STACK, timeAgo, useRepo, type Commit } from '@/lib/project';
-import { appQuery, useProject } from '@/lib/projects';
+import { DeleteDialog, RenameDialog, ShareDialog } from '@/components/ProjectDialogs';
+import { appQuery, sameLogin, useProject } from '@/lib/projects';
 
 const BASE_NOW = Date.UTC(2026, 9, 11, 12, 0, 0);
 
@@ -28,6 +29,7 @@ export default function Overview() {
   const now = useNow();
   const project = useProject();
   const q = appQuery(me);
+  const [dialog, setDialog] = useState<'rename' | 'delete' | 'share' | null>(null);
 
   const tasks = Object.values(s.tasks);
   const done = tasks.filter((t) => s.runs[t.id]?.status === 'done');
@@ -58,6 +60,16 @@ export default function Overview() {
             {project && (
               <div className="hv-ov__goalmeta">
                 <span>Started by {project.createdBy} · {new Date(project.createdAt).toLocaleDateString()}</span>
+                {project.sharedWith.length > 0 && <span>Shared with {project.sharedWith.join(', ')}</span>}
+              </div>
+            )}
+            {project && (
+              <div className="hv-ov__goalactions">
+                <button type="button" className="hv-btn hv-btn--paper hv-btn--sm" onClick={() => setDialog('share')}><Icon name="users" size={15} /> Share</button>
+                <button type="button" className="hv-btn hv-btn--paper hv-btn--sm" onClick={() => setDialog('rename')}><Icon name="pencil" size={15} /> Rename</button>
+                {sameLogin(project.createdBy, me) && (
+                  <button type="button" className="hv-btn hv-btn--danger hv-btn--sm" onClick={() => setDialog('delete')}><Icon name="trash" size={15} /> Delete</button>
+                )}
               </div>
             )}
           </section>
@@ -68,6 +80,13 @@ export default function Overview() {
             <Stat label="Tests passing" value={String(testsPassing)} tone="hot" id="s3" />
             <Stat label="Agent runs" value={String(agentRuns)} tone="ink" id="s4" />
           </section>
+
+          {project?.stack && (
+            <section className="hv-card hv-ov__spec">
+              <header className="hv-ov__head"><h2><Icon name="sparkle" size={18} /> Approved stack and spec</h2></header>
+              <pre>{project.stack}</pre>
+            </section>
+          )}
 
           <GitHistory commits={commits} now={now} pushed={s.pushedUrl} />
 
@@ -82,6 +101,11 @@ export default function Overview() {
           <RecentDecisions q={q} />
         </div>
       </main>
+      {project && dialog === 'rename' && <RenameDialog project={project} onClose={() => setDialog(null)} />}
+      {project && dialog === 'share' && <ShareDialog project={project} me={me} onClose={() => setDialog(null)} />}
+      {project && dialog === 'delete' && (
+        <DeleteDialog project={project} onClose={() => setDialog(null)} onDeleted={() => { window.location.href = `/projects${appQuery(me, '')}`; }} />
+      )}
     </div>
   );
 }

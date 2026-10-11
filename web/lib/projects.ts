@@ -5,8 +5,8 @@
 // one). Switching projects is a full page load, because the doc provider is one per tab.
 
 import { useSyncExternalStore } from 'react';
-import type { Project } from '@hive/shared/types';
-import { authHeaders, serverUrl } from './auth';
+import type { Project, UserSummary } from '@hive/shared/types';
+import { authHeaders, initAuth, serverUrl } from './auth';
 
 const LAST = 'hive.project';
 
@@ -40,8 +40,14 @@ let loading: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 
+// The demo name (?name=) when sign-in is off; with sign-in on the server uses the verified login instead.
+export const demoName = () =>
+  (typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('name')) || 'Guest';
+
+// Only this person's projects and the ones shared with them, so wait for sign-in before asking.
 export function reloadProjects(): Promise<void> {
-  loading = fetch(`${serverUrl()}/api/projects`)
+  loading = initAuth()
+    .then(() => fetch(`${serverUrl()}/api/projects?name=${encodeURIComponent(demoName())}`, { headers: authHeaders() }))
     .then((r) => r.json() as Promise<{ projects: Project[] }>)
     .then((j) => { projects = j.projects; error = ''; }, () => { error = 'Could not reach the Hive server'; })
     .finally(() => { loading = null; emit(); });
@@ -65,20 +71,61 @@ export function useProject(): Project | null {
   return list?.find((p) => p.id === id) ?? null;
 }
 
-async function send<T>(method: string, path: string, body: unknown): Promise<T> {
+async function send<T>(method: string, path: string, body: Record<string, unknown> = {}): Promise<T> {
   const res = await fetch(`${serverUrl()}/api${path}`, {
-    method, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body),
+    method, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ by: demoName(), ...body }),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
   return json as T;
 }
 
-export async function createProject(name: string, goal: string, by: string): Promise<Project> {
-  const p = await send<Project>('POST', '/projects', { name, goal, by });
+export interface NewProject { name: string; goal: string; by: string; repoName: string; private: boolean; stack?: string }
+
+// Creates the project and its GitHub repo (with the person's GitHub sign-in).
+export async function createProject(p: NewProject): Promise<Project> {
+  const made = await send<Project>('POST', '/projects', { ...p });
   await reloadProjects();
-  return p;
+  return made;
 }
+
+// A draft stack / spec doc for a project not created yet; `notes` asks for changes to the last draft.
+export async function draftStack(name: string, goal: string, notes = ''): Promise<string> {
+  return (await send<{ stack: string }>('POST', '/stack', { name, goal, notes })).stack;
+}
+
+export async function renameProject(id: string, name: string): Promise<void> {
+  await send('POST', `/projects/${id}/rename`, { name });
+  await reloadProjects();
+}
+
+// Deletes the project's graph, agents and workspace on the server; its GitHub repo stays.
+export async function deleteProject(id: string): Promise<void> {
+  await send('POST', `/projects/${id}/delete`);
+  await reloadProjects();
+}
+
+export async function setShared(id: string, login: string, on: boolean): Promise<void> {
+  await send('POST', `/projects/${id}/${on ? 'share' : 'unshare'}`, { login });
+  await reloadProjects();
+}
+
+// People who have signed in to this Hive, matched by GitHub username (an empty query lists everyone).
+export async function searchUsers(q: string): Promise<UserSummary[]> {
+  await initAuth();
+  const res = await fetch(`${serverUrl()}/api/users?q=${encodeURIComponent(q)}&name=${encodeURIComponent(demoName())}`, { headers: authHeaders() });
+  return res.ok ? ((await res.json()) as { users: UserSummary[] }).users : [];
+}
+
+// Whether the server holds this person's GitHub token (needed to create the repo).
+export async function githubStatus(): Promise<{ signedIn: boolean; githubConnected: boolean }> {
+  await initAuth();
+  const res = await fetch(`${serverUrl()}/api/me`, { headers: authHeaders() });
+  const j = (await res.json().catch(() => ({}))) as { user?: unknown; githubConnected?: boolean };
+  return { signedIn: !!j.user, githubConnected: !!j.githubConnected };
+}
+
+export const sameLogin = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 // Approve pushes the current project to this owner/repo (null disconnects).
 export async function setProjectRepo(repo: string | null): Promise<void> {

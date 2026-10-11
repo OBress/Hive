@@ -9,7 +9,7 @@ import { initModels } from './llm.ts';
 import { initMongo } from './mongo.ts';
 import { DATA_DIR } from './paths.ts';
 import {
-  createProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setOpener, setProjectDoc,
+  createProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setCloser, setOpener, setProjectDoc,
 } from './projects.ts';
 import { api, errorHandler } from './routes.ts';
 import { disposeSandbox, warmSandbox } from './sandbox.ts';
@@ -54,8 +54,10 @@ const server = new Server({
 });
 
 // A server-side connection keeps each project's doc loaded even with no browsers open; server code uses it via doc.ts.
+const directs = new Map<string, Awaited<ReturnType<typeof server.hocuspocus.openDirectConnection>>>();
 async function open(p: Project, seed?: TaskSpec[]) {
   const direct = await server.hocuspocus.openDirectConnection(p.id);
+  directs.set(p.id, direct);
   setProjectDoc(p.id, direct.document!);
   await inProject(p.id, async () => {
     await ensureWorkspace();
@@ -66,6 +68,12 @@ async function open(p: Project, seed?: TaskSpec[]) {
   });
 }
 setOpener((p) => open(p));
+// A deleted project: drop browsers on its doc, then our own connection, so Hocuspocus unloads it.
+setCloser(async (id) => {
+  server.hocuspocus.closeConnections(id);
+  await directs.get(id)?.disconnect().catch(() => {});
+  directs.delete(id);
+});
 
 mkdirSync(DATA_DIR, { recursive: true });
 initEpoch(!registryExists());   // a fresh data/ (first run or `pnpm reset`) gets a new epoch
