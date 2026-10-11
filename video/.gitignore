@@ -1,0 +1,10 @@
+/target
+*.mp4
+frames/
+strip.png
+onion.png
+test_render/
+_frame_snapshots/*.actual.png
+_frame_snapshots/*.diff.png
+build.log
+voice-preview.wav
