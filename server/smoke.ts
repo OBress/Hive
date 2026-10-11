@@ -28,7 +28,7 @@ const base = `http://localhost:${port}/api`;
 rmSync(DATA_DIR, { recursive: true, force: true });
 const child = spawn(process.execPath, ['--import', 'tsx', 'index.ts'], {
   cwd: SERVER_DIR,
-  env: { ...process.env, HIVE_DATA_DIR: DATA_DIR, LLM_PROVIDER: 'fake', FAKE_DELAY_MS: '20', PORT: String(port), MAX_PARALLEL: '2', MAX_STEPS: '20', SUPABASE_URL: '', SUPABASE_ANON_KEY: '', MONGODB_URI: '', GITHUB_REMOTE: '', GITHUB_TOKEN: '' },
+  env: { ...process.env, HIVE_DATA_DIR: DATA_DIR, HIVE_SEED: join(SERVER_DIR, 'smoke-seed.json'), LLM_PROVIDER: 'fake', FAKE_DELAY_MS: '20', PORT: String(port), MAX_PARALLEL: '2', MAX_STEPS: '20', SUPABASE_URL: '', SUPABASE_ANON_KEY: '', MONGODB_URI: '', GITHUB_REMOTE: '', GITHUB_TOKEN: '' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let log = '';

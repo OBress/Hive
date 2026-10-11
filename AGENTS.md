@@ -8,7 +8,7 @@ Hive is **"Google Docs for coding agents"**: a team shares one live task graph, 
 
 The 90-second demo:
 
-1. Ana types a goal in chat, or the seeded graph is loaded; a task graph appears on every screen.
+1. Ana types a goal in chat; a task graph appears on every screen.
 2. Agents start on ready tasks. Everyone sees each agent's steps stream live: its plan, the file it is writing, tests going red then green.
 3. Ben types into the Stats agent's session: "count unique visitors, not hits." The agent acknowledges at its next step and changes course.
 4. Ana takes over a task, edits a file and hands it back; the agent continues from her edit. She reassigns another task to Ben, who gets an auto-written summary.
@@ -24,9 +24,9 @@ hive/
   package.json            root scripts: `pnpm dev` (server + web), `pnpm reset`, `pnpm test`
   AGENTS.md, INTEGRATION.md
   scripts/reset.mjs       deletes data/doc.bin, workspace, worktrees, sessions
-  shared/                 `@hive/shared`: types.ts (the contract), seed.json (URL shortener graph)
+  shared/                 `@hive/shared`: types.ts (the contract)
   server/                 Node + TS via tsx, Express + Hocuspocus on :4000
-    index.ts              HTTP + websocket, doc load/save, seed, startup recovery
+    index.ts              HTTP + websocket, doc load/save, startup recovery
     paths.ts              data/ locations
     doc.ts                getDoc/setDoc and typed helpers; serverWrite(fn)
     llm.ts                generate() for openai (Luminal) / anthropic / fake; model selection
@@ -42,6 +42,7 @@ hive/
     routes.ts             all Express routes
     settings.ts           /api/config, doc epoch, push repo, env status
     smoke.ts              end-to-end demo check with LLM_PROVIDER=fake
+    smoke-seed.json       the URL shortener graph the smoke test starts from (HIVE_SEED)
     workspace-template/   the project agents build (copied to data/workspace)
   web/                    Next.js client-only SPA on :5173 (owner: Owen)
   data/                   runtime only, gitignored: doc.bin, workspace/, worktrees/, sessions/
@@ -54,7 +55,7 @@ Target about 1,500 lines for all of `server/`. If a file grows past its job, sim
 ```bash
 pnpm i                         # install
 pnpm dev                       # server on :4000 and web on :5173
-pnpm reset                     # wipe data/ state so the next start loads the seed
+pnpm reset                     # wipe data/ state so the next start is an empty graph
 pnpm test                      # unit tests (vitest in server/)
 pnpm --filter server typecheck
 pnpm --filter server smoke     # full demo against the fake provider

@@ -3,7 +3,6 @@ import express from 'express';
 import { Server } from '@hocuspocus/server';
 import * as Y from 'yjs';
 import { DOC_NAME, MAPS, SERVER_PORT, type TaskSpec } from '@hive/shared/types';
-import seed from '@hive/shared/seed.json' with { type: 'json' };
 import { authMiddleware, initAuth, wsAuthenticate } from './auth.ts';
 import { getDoc, setDoc } from './doc.ts';
 import { initModels } from './llm.ts';
@@ -20,7 +19,8 @@ let doc: Y.Doc | null = null;
 let saver: NodeJS.Timeout | undefined;
 const save = () => writeFileSync(DOC_FILE, Y.encodeStateAsUpdate(getDoc()));
 
-// Fill a freshly created doc from data/doc.bin, or from the seed on first run / after `pnpm reset`.
+// Fill a freshly created doc from data/doc.bin. A fresh start (first run or after `pnpm reset`) is an empty graph,
+// unless HIVE_SEED names a JSON file of tasks (the smoke test uses smoke-seed.json).
 function loadInto(doc: Y.Doc) {
   if (existsSync(DOC_FILE)) {
     Y.applyUpdate(doc, readFileSync(DOC_FILE));
@@ -28,12 +28,15 @@ function loadInto(doc: Y.Doc) {
     console.log('Loaded data/doc.bin');
     return;
   }
-  const tasks = doc.getMap<TaskSpec>(MAPS.tasks);
-  doc.transact(() => {
-    for (const t of seed.tasks as TaskSpec[]) tasks.set(t.id, t);
-  }, 'server');
+  const seed = process.env.HIVE_SEED;
+  if (seed) {
+    const tasks = doc.getMap<TaskSpec>(MAPS.tasks);
+    doc.transact(() => {
+      for (const t of (JSON.parse(readFileSync(seed, 'utf8')) as { tasks: TaskSpec[] }).tasks) tasks.set(t.id, t);
+    }, 'server');
+  }
   initEpoch(true);
-  console.log('Loaded shared/seed.json');
+  console.log(seed ? `Loaded ${seed}` : 'Started with an empty graph');
 }
 
 const app = express();

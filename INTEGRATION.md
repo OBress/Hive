@@ -88,7 +88,7 @@ Supabase setup: Authentication → Providers → GitHub on (client id/secret fro
 
 ## Doc epoch (resets)
 
-Each fresh seed (first run or `pnpm reset`) gets a new epoch. A tab sends the epoch it loaded with in its websocket token; a tab from before the reset is refused with reason `stale-epoch` and reloads itself, instead of syncing its old doc into the fresh server.
+Each fresh start (first run or `pnpm reset`) gets a new epoch. A tab sends the epoch it loaded with in its websocket token; a tab from before the reset is refused with reason `stale-epoch` and reloads itself, instead of syncing its old doc into the fresh server.
 
 ## How the frontend should use this
 

@@ -10,7 +10,7 @@ const EPOCH_FILE = join(DATA_DIR, 'epoch.txt');
 const REPO_FILE = join(DATA_DIR, 'repo.json');
 const ENV_FILE = join(SERVER_DIR, '..', '.env');
 
-// The doc's epoch changes on every fresh seed (first run or `pnpm reset`). Browser tabs send the epoch
+// The doc's epoch changes on every fresh start (first run or `pnpm reset`). Browser tabs send the epoch
 // they loaded with; a tab from an older epoch is refused instead of merging its stale doc into the new one.
 let epoch = '';
 export const getEpoch = () => epoch;

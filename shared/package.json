@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./types": "./types.ts",
-    "./seed.json": "./seed.json"
+    "./types": "./types.ts"
   }
 }
