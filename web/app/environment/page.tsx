@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import TopBar from '@/components/TopBar';
 import { Icon, tilt } from '@/components/ui';
 import { ENV_VARS, envTemplate, type EnvKind, type EnvStatus, type EnvVar } from '@/lib/env';
+import { authHeaders } from '@/lib/auth';
 import { apiUrl, useUserName } from '@/lib/hive';
 
 type Filter = 'all' | EnvKind;
@@ -121,13 +122,15 @@ function EnvRow({ v, me, set, onSaved }: { v: EnvVar; me: string; set?: boolean;
     setValue('');                      // don't keep the value around in the page
     setReveal(false);
     try {
-      const r = await fetch(apiUrl('/api/env'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (!r.ok) throw new Error(String(r.status));
-      setMsg({ ok: true, text: secret ? 'Saved on the server. It won’t be shown again.' : 'Saved.' });
+      const r = await fetch(apiUrl('/api/env'), { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `Request failed (${r.status})`);
+      const after = j.restartNeeded ? ' Restart the server to apply it.' : '';
+      setMsg({ ok: true, text: (secret ? 'Saved on the server. It won’t be shown again.' : 'Saved.') + after });
       setEditing(false);
       onSaved();
-    } catch {
-      setMsg({ ok: false, text: 'The server doesn’t accept env changes yet (POST /api/env). Nothing was stored.' });
+    } catch (e) {
+      setMsg({ ok: false, text: `${(e as Error).message}. Nothing was stored.` });
     }
   };
 

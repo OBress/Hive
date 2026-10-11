@@ -40,6 +40,7 @@ hive/
     auth.ts               Supabase token verification, middleware, GitHub tokens in memory
     mongo.ts              optional MongoDB mirror + history reads
     routes.ts             all Express routes
+    settings.ts           /api/config, doc epoch, push repo, env status
     smoke.ts              end-to-end demo check with LLM_PROVIDER=fake
     workspace-template/   the project agents build (copied to data/workspace)
   web/                    Next.js client-only SPA on :5173 (owner: Owen)
@@ -101,6 +102,9 @@ Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tabl
 | POST /api/chat | `{from, text}` | Planner reply appended to chat |
 | GET /api/history?taskId= | | Steps for a task |
 | POST /api/approve | `{by}` | Test main, push to GitHub |
+| GET /api/config | | `{auth, supabaseUrl, supabaseAnonKey, epoch, repo}` |
+| POST /api/repo | `{repo}` | Set the push target (owner/repo) |
+| GET/POST /api/env | `{name, value}` | Which vars are set; write one (server machine only) |
 | GET /api/me | | `{user, githubConnected}` |
 | POST /api/github/token | `{providerToken}` | Keep GitHub token in memory |
 

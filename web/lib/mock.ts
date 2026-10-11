@@ -10,6 +10,7 @@ import {
   ARRAYS, MAPS,
   type ChatMessage as DocChat, type SessionView, type Step, type TaskSpec, type TaskState,
 } from '@hive/shared/types';
+import { authHeaders } from './auth';
 import { apiUrl, getProvider } from './hive';
 import { runSteps } from './steps';
 import type { ChatMessage, Conflict, Decision, RunStatus, Task, TaskRun } from './types';
@@ -173,7 +174,7 @@ const title = (id: string) => state.tasks[id]?.title ?? id;
 
 async function api<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(apiUrl(`/api${path}`), {
-    method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
+    method, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
@@ -202,7 +203,7 @@ export function nextTaskId(): string {
   return `T${n + 1}`;
 }
 
-const myName = () => new URLSearchParams(window.location.search).get('name') ?? 'Guest';
+const myName = () => new URLSearchParams(window.location.search).get('name') ?? 'Guest';   // the server replaces it when sign-in is on
 
 // ---- actions (the UI calls only these) ------------------------------------------
 
@@ -270,13 +271,13 @@ export function resolveConflict(_id: string, _choice: 'ours' | 'theirs' | 'propo
   toast('Merge conflicts are resolved by taking over the task.');
 }
 
-// Approve: the server runs the tests on main and pushes to GITHUB_REMOTE (the repo field is informational).
+// Approve: the server runs the tests on main and pushes to the repo connected on Overview (else GITHUB_REMOTE).
 export async function push(by: string, _repo: string | null) {
   setLocal({ pushing: true });
   try {
     const r = await api<{ ok: boolean; commit: string; pushed: boolean; url: string; pushError?: string }>('POST', '/approve', { by });
     if (r.pushed && r.url) setLocal({ pushedUrl: `${r.url}/commit/${r.commit}` });
-    else toast(`Tests pass on main (${r.commit}). ${r.pushError ? `Push failed: ${r.pushError}` : 'Not pushed: the server has no GITHUB_REMOTE / token.'}`);
+    else toast(`Tests pass on main (${r.commit}). ${r.pushError ? `Push failed: ${r.pushError}` : 'Not pushed: connect a repo on Overview and sign in with GitHub (or set GITHUB_TOKEN).'}`);
   } catch (e) {
     fail(e);
   } finally {

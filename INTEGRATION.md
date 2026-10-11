@@ -51,6 +51,10 @@ When auth is on (see below), `by`/`from` in bodies are ignored and replaced by t
 | POST /api/chat | `{from, text}` | 202 `{id}`; Planner reply appears in `chat` (may also edit `tasks`) |
 | GET /api/history?taskId=stats | | `{steps: Step[], source: "mongo" \| "doc"}` |
 | POST /api/approve | `{by}` | `{ok: true, commit, pushed, url, pushError?}`; 409 `{ok: false, error, output}` if tests fail on main |
+| GET /api/config | | `{auth, supabaseUrl?, supabaseAnonKey?, epoch, repo}`: what the browser needs before connecting (the anon key is public) |
+| POST /api/repo | `{repo: "owner/repo" \| null}` | Sets the push target for Approve (overrides `GITHUB_REMOTE`) |
+| GET /api/env | | `{NAME: {set: boolean}}` for every server variable; never values |
+| POST /api/env | `{name, value}` | Writes one variable to `.env`; **only from the machine running the server** (403 otherwise); `{ok, restartNeeded}` |
 | GET /api/me | | `{user: HiveUser \| null, githubConnected}` (`user` is null when auth is off) |
 | POST /api/github/token | `{providerToken}` | `{ok: true}`; kept in server memory only (400 when auth is off) |
 
@@ -72,21 +76,23 @@ POST /api/chat
 
 ## Auth (Supabase GitHub OAuth)
 
-Supabase is used only for sign-in. Auth is **off** when the server has no `SUPABASE_URL`/`SUPABASE_ANON_KEY` (local dev, fake mode); then nothing below is needed and names come from `?name=`.
+Supabase is used only for sign-in. It is **on** when the server's `.env` has `SUPABASE_URL` and `SUPABASE_ANON_KEY`, and off otherwise (local dev, fake mode; names then come from `?name=`). The web app needs no env file: it reads the Supabase URL and anon key from `GET /api/config`. This is all wired in `web/lib/auth.ts`:
 
-When it's on:
+1. `AuthGate` (in the root layout) shows "Sign in with GitHub" until there is a session: `signInWithOAuth({provider: 'github', options: {scopes: 'repo', redirectTo: location.href}})`.
+2. Every REST call sends `Authorization: Bearer <access_token>` (`authHeaders()`); the server replaces `by`/`from` with the GitHub login.
+3. The websocket token is JSON `{epoch, access}` (see below); the server rejects unknown users.
+4. After sign-in, `provider_token` is posted once to `/api/github/token`, so Approve pushes as that person.
+5. `useUserName()` returns the GitHub login when auth is on.
 
-1. `web/.env.local`: `NEXT_PUBLIC_SUPABASE_URL=...` and `NEXT_PUBLIC_SUPABASE_ANON_KEY=...` (same values as the server's `.env`). Add `@supabase/supabase-js` to `web/`.
-2. Sign in: `supabase.auth.signInWithOAuth({provider: 'github', options: {scopes: 'repo', redirectTo: window.location.origin}})`.
-3. Every REST call: header `Authorization: Bearer ${session.access_token}`.
-4. Websocket: `new HocuspocusProvider({url, name: DOC_NAME, token: session.access_token})`. Unknown tokens are rejected.
-5. Once after sign-in, if `session.provider_token` is present: `POST /api/github/token {providerToken: session.provider_token}`. Approve then pushes with that person's GitHub account.
-6. `GET /api/me` → `{user: {id, login, name, avatarUrl, githubId}, githubConnected}`. Use `user.login` as the display name; steps, chat and owners use it.
+Supabase setup: Authentication → Providers → GitHub on (client id/secret from a GitHub OAuth App whose callback is `https://<project>.supabase.co/auth/v1/callback`), and Authentication → URL Configuration → add `http://localhost:5173/**` and `http://<lan-ip>:5173/**` as redirect URLs.
+
+## Doc epoch (resets)
+
+Each fresh seed (first run or `pnpm reset`) gets a new epoch. A tab sends the epoch it loaded with in its websocket token; a tab from before the reset is refused with reason `stale-epoch` and reloads itself, instead of syncing its old doc into the fresh server.
 
 ## How the frontend should use this
 
 - `web/lib/mock.ts` is the live adapter: it maps the doc and REST onto the shapes the components use (`Task`, `TaskRun`, `Decision`...). Acceptance checks are stored inside `spec` under an "Acceptance checks:" heading so the agent reads them; `files` come from the task's commits; decisions are steps (ids `st_<n>`, so planner cites line up).
-- `pnpm reset` with browser tabs still open brings old state back: a connected tab syncs its copy of the doc into the fresh server. Close Hive tabs first, then reset and restart.
 
 - To build the UI with no API key, run the server with `LLM_PROVIDER=fake` in `.env`: scripted agents stream, test, merge and answer chat.
 - Ids: steps are `st_<n>` (`n` is the global order), sessions `s_<taskId>_<suffix>`, chat `c_...`.
