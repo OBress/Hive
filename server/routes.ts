@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { ARRAYS, MAPS } from '@hive/shared/types';
 import { addChat, addStep, HttpError, getDoc } from './doc.ts';
 import { githubTokens, authEnabled } from './auth.ts';
 import { withRepoLock } from './git.ts';
@@ -41,7 +42,7 @@ api.get('/projects', (_req, res) => {
 api.post('/projects', async (req, res) => {
   const { name } = need(req, 'name');
   if (name.length > 60) throw new HttpError(400, 'name must be at most 60 characters');
-  const p = createProject(name, opt(req, 'goal').slice(0, 500), opt(req, 'by') || 'Guest');
+  const p = await createProject(name, opt(req, 'goal').slice(0, 500), opt(req, 'by') || 'Guest');
   await openProject(p);
   console.log(`Project ${p.id} created by ${p.createdBy}`);
   const repoError = req.body?.createRepo === false ? undefined : await giveRepo(p.id, res.locals.githubToken || process.env.GITHUB_TOKEN);
@@ -55,7 +56,7 @@ async function giveRepo(id: string, token: string | undefined): Promise<string |
   const p = getProject(id)!;
   try {
     const repo = await createRepo(token, slugOf(p.name), p.id, p.goal || `${p.name}, built with Hive`);
-    updateProject(id, { repo });
+    await updateProject(id, { repo });
     console.log(`Project ${id}: created GitHub repo ${repo}`);
     await inProject(id, () => withRepoLock(() => pushMain(workspaceDir(), remoteFor(repo), token)));
     return undefined;
@@ -92,17 +93,21 @@ routes.get('/', (_req, res) => {
 });
 
 // Push target for Approve: owner/repo, or null to disconnect.
-routes.post('/repo', (req, res) => {
+routes.post('/repo', async (req, res) => {
   const repo = req.body?.repo;
   if (repo !== null && !(typeof repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(repo.trim()))) {
     throw new HttpError(400, 'repo must be "owner/repo" or null');
   }
-  res.json(updateProject(current().id, { repo: repo?.trim() ?? null }));
+  res.json(await updateProject(current().id, { repo: repo?.trim() ?? null }));
 });
 
+// Read each part through getMap/getArray: after a load from storage, `doc.share` only lists the parts touched so far.
 routes.get('/state', (_req, res) => {
   const d = getDoc();
-  res.json(Object.fromEntries(['tasks', 'taskState', 'sessions', 'live', 'steps', 'chat'].map((k) => [k, d.share.get(k)?.toJSON() ?? null])));
+  res.json({
+    ...Object.fromEntries(Object.values(MAPS).map((k) => [k, d.getMap(k).toJSON()])),
+    ...Object.fromEntries(Object.values(ARRAYS).map((k) => [k, d.getArray(k).toJSON()])),
+  });
 });
 
 routes.post('/run', (req, res) => {

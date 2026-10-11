@@ -6,6 +6,7 @@ import { authEnabled } from './auth.ts';
 import { HttpError } from './doc.ts';
 import { DATA_DIR, SERVER_DIR } from './paths.ts';
 import { current } from './projects.ts';
+import { epochDb, mongoOn, setEpochDb } from './store.ts';
 
 const EPOCH_FILE = join(DATA_DIR, 'epoch.txt');
 const ENV_FILE = join(SERVER_DIR, '..', '.env');
@@ -14,7 +15,12 @@ const ENV_FILE = join(SERVER_DIR, '..', '.env');
 // they loaded with; a tab from an older epoch is refused instead of merging its stale doc into the new one.
 let epoch = '';
 export const getEpoch = () => epoch;
-export function initEpoch(freshDoc: boolean) {
+export async function initEpoch(freshDoc: boolean) {
+  if (mongoOn()) {   // kept across redeploys; a new one only for a brand-new database
+    epoch = (await epochDb()) ?? randomUUID();
+    await setEpochDb(epoch);
+    return;
+  }
   if (freshDoc || !existsSync(EPOCH_FILE)) writeFileSync(EPOCH_FILE, randomUUID());
   epoch = readFileSync(EPOCH_FILE, 'utf8').trim();
 }
@@ -28,7 +34,7 @@ export function pushRemote(): string {
 // Every variable the server reads (names only ever leave the server, never values).
 export const ENV_NAMES = [
   'LLM_PROVIDER', 'LLM_API_KEY', 'LLM_BASE_URL', 'AGENT_MODEL', 'PLANNER_MODEL', 'ANTHROPIC_API_KEY',
-  'MAX_PARALLEL', 'MAX_STEPS', 'GITHUB_REMOTE', 'GITHUB_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'MONGODB_URI', 'PORT',
+  'MAX_PARALLEL', 'MAX_STEPS', 'GITHUB_REMOTE', 'GITHUB_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'MONGODB_URI', 'MONGODB_DB', 'PORT',
   'DAYTONA_API_KEY', 'DAYTONA_API_URL', 'DAYTONA_TARGET', 'OPENCODE_URL',
 ];
 const LIVE = new Set(['GITHUB_REMOTE', 'GITHUB_TOKEN']);   // read per request; the rest need a restart

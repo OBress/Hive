@@ -40,7 +40,8 @@ hive/
     graph.ts              graph op validation, cycles, ready set, layout
     planner.ts            chat (graph edits or cited answers), summarize()
     auth.ts               Supabase token verification, middleware, GitHub tokens in memory
-    mongo.ts              optional MongoDB mirror + history reads
+    store.ts              MongoDB storage (projects, docs, transcripts, epoch) when MONGODB_URI is set
+    mongo.ts              step/chat history in MongoDB + history reads
     routes.ts             all Express routes
     settings.ts           /api/config, doc epoch, push repo, env status
     smoke.ts              end-to-end demo check with LLM_PROVIDER=fake
@@ -82,6 +83,12 @@ Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and 
 - Each task works in its own git worktree `data/projects/<p>/worktrees/<id>` on branch `task/<id>`; finished tasks merge into `main` of that project's `workspace/` under a repo lock.
 - Every agent write and every human edit is its own commit. Agents commit as "Hive Agent"; people commit under their own name (GitHub noreply email when signed in).
 - **Endpoints that start work return 202**; results arrive through the Y.Doc.
+
+## Storage and hosting
+
+- **Local dev:** everything is files under `data/` (`pnpm reset` wipes it).
+- **Hosted (Railway, `server/Dockerfile`):** set `MONGODB_URI` and MongoDB holds the project list, each project's Y.Doc (saved every 2 s when it changed, and on SIGTERM), agent transcripts, the doc epoch and the step/chat history. The server refuses to start if `MONGODB_URI` is set but unreachable. The git workspaces and worktrees stay on disk: mount a Railway volume at `/app/data` so in-progress task branches survive redeploys (approved `main` is also on each project's GitHub repo).
+- Run `SMOKE_MONGODB_URI=mongodb://127.0.0.1:27017/hive_smoke pnpm --filter server smoke` to check the MongoDB path, including a restart on an empty disk. It drops that database first.
 
 ## Auth
 
@@ -142,4 +149,4 @@ We develop on Windows and demo on macOS. Use `path.join`, `fs.rmSync(..., {recur
 
 ## Cut order (if behind schedule)
 
-Cut in this order: MongoDB mirror → chat graph edits (keep catch-up answers) → GitHub push (keep the local merge) → hand off to a person (keep takeover and handback). Never cut the live stream, steer, or takeover and handback: they are the pitch.
+Cut in this order: MongoDB (local dev runs on files without it) → chat graph edits (keep catch-up answers) → GitHub push (keep the local merge) → hand off to a person (keep takeover and handback). Never cut the live stream, steer, or takeover and handback: they are the pitch.
