@@ -1,14 +1,16 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { ARRAYS, MAPS } from '@hive/shared/types';
 import { addChat, addStep, HttpError, getDoc } from './doc.ts';
 import { githubTokens, authEnabled } from './auth.ts';
-import { git, withRepoLock } from './git.ts';
-import { createRepo, repoSlug } from './github.ts';
+import { withRepoLock } from './git.ts';
+import { createRepo, pushMain, remoteFor } from './github.ts';
 import { models, provider } from './llm.ts';
 import { history } from './mongo.ts';
 import { chat, stackDoc, summarize } from './planner.ts';
 import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, stopProject, takeover } from './session.ts';
 import {
-  canSee, createProject, current, deleteProject, getProject, inProject, isOwner, listProjects, openProject, projectsFor, setShared, updateProject, workspaceDir,
+  canSee, createProject, current, deleteProject, getProject, inProject, isOwner, listProjects, openProject, projectsFor, setShared, slugOf,
+  updateProject, workspaceDir,
 } from './projects.ts';
 import { runTests } from './runner.ts';
 import { pushRemote } from './settings.ts';
@@ -53,19 +55,29 @@ api.post('/projects', async (req, res) => {
   if (name.length > 60) throw new HttpError(400, 'name must be at most 60 characters');
   const by = opt(req, 'by') || 'Guest';
   if (!authEnabled()) rememberUser({ login: by, name: by, avatarUrl: '' });
-  const goal = opt(req, 'goal').slice(0, 500);
-  // Every project gets its own new GitHub repo, made with the creator's OAuth token (GITHUB_TOKEN with auth off).
-  // Signed in without a GitHub token on the server, creation is refused; with auth off and no token it is skipped.
-  const token: string | undefined = res.locals.githubToken || process.env.GITHUB_TOKEN || undefined;
-  if (authEnabled() && !token) throw new HttpError(428, 'Connect GitHub first: Hive creates a repo for every project');
-  const repoName = repoSlug(opt(req, 'repoName') || name);
-  if (token && !repoName) throw new HttpError(400, 'repoName must contain letters or digits');
-  const repo = token ? await createRepo(token, repoName, goal || name, req.body?.private !== false) : null;
-  const p = createProject(name, goal, by, opt(req, 'stack').slice(0, MAX_STACK) || undefined, repo);
+  const p = await createProject(name, opt(req, 'goal').slice(0, 500), by, opt(req, 'stack').slice(0, MAX_STACK) || undefined);
   await openProject(p);
   console.log(`Project ${p.id} created by ${p.createdBy}`);
-  res.status(201).json(p);
+  const repoError = req.body?.createRepo === false ? undefined : await giveRepo(p.id, res.locals.githubToken || process.env.GITHUB_TOKEN);
+  res.status(201).json({ ...getProject(p.id), repoError });
 });
+
+// Every new project gets its own private GitHub repo (under the creator's account), set as its push target and
+// seeded with the starting files. Failing here never fails the project; the reason goes back as repoError.
+async function giveRepo(id: string, token: string | undefined): Promise<string | undefined> {
+  if (!token) return 'No GitHub repo was created: sign in with GitHub (or set GITHUB_TOKEN). You can connect one on Overview.';
+  const p = getProject(id)!;
+  try {
+    const repo = await createRepo(token, slugOf(p.name), p.id, p.goal || `${p.name}, built with Hive`);
+    await updateProject(id, { repo });
+    console.log(`Project ${id}: created GitHub repo ${repo}`);
+    await inProject(id, () => withRepoLock(() => pushMain(workspaceDir(), remoteFor(repo), token)));
+    return undefined;
+  } catch (e) {
+    console.error(`Project ${id}: ${(e as Error).message}`);
+    return (e as Error).message;
+  }
+}
 
 // Draft a stack / spec doc for a project that doesn't exist yet; the person edits and approves it before creating.
 api.post('/stack', async (req, res) => {
@@ -106,34 +118,35 @@ routes.get('/', (_req, res) => {
 });
 
 // Push target for Approve: owner/repo, or null to disconnect.
-routes.post('/repo', (req, res) => {
+routes.post('/repo', async (req, res) => {
   const repo = req.body?.repo;
   if (repo !== null && !(typeof repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(repo.trim()))) {
     throw new HttpError(400, 'repo must be "owner/repo" or null');
   }
-  res.json(updateProject(current().id, { repo: repo?.trim() ?? null }));
+  res.json(await updateProject(current().id, { repo: repo?.trim() ?? null }));
 });
 
 // Share with / unshare from someone who has signed in here. Anyone on the project may share; the owner can't be removed.
 function shareRoute(on: boolean) {
-  return (req: Request, res: Response) => {
+  return async (req: Request, res: Response) => {
     const { by, login } = need(req, 'by', 'login');
     const p = current();
     if (!canSee(p, by)) throw new HttpError(403, 'Only people on this project can share it');
     const user = findUser(login);
     if (on && !user) throw new HttpError(404, `No Hive account for "${login}"; they need to sign in once first`);
     if (isOwner(p, login)) throw new HttpError(400, `${p.createdBy} owns this project`);
-    res.json(setShared(p.id, user?.login ?? login, on));
+    res.json(await setShared(p.id, user?.login ?? login, on));
   };
 }
 routes.post('/share', shareRoute(true));
+routes.post('/unshare', shareRoute(false));
 
 // Rename: anyone on the project. Delete: only its owner; stops its agents and removes its data (not its GitHub repo).
-routes.post('/rename', (req, res) => {
+routes.post('/rename', async (req, res) => {
   const { by, name } = need(req, 'by', 'name');
   if (name.length > 60) throw new HttpError(400, 'name must be at most 60 characters');
   if (!canSee(current(), by)) throw new HttpError(403, 'Only people on this project can rename it');
-  res.json(updateProject(current().id, { name }));
+  res.json(await updateProject(current().id, { name }));
 });
 
 routes.post('/delete', async (req, res) => {
@@ -145,11 +158,14 @@ routes.post('/delete', async (req, res) => {
   console.log(`Project ${p.id} deleted by ${by}`);
   res.json({ ok: true });
 });
-routes.post('/unshare', shareRoute(false));
 
+// Read each part through getMap/getArray: after a load from storage, `doc.share` only lists the parts touched so far.
 routes.get('/state', (_req, res) => {
   const d = getDoc();
-  res.json(Object.fromEntries(['tasks', 'taskState', 'sessions', 'live', 'steps', 'chat'].map((k) => [k, d.share.get(k)?.toJSON() ?? null])));
+  res.json({
+    ...Object.fromEntries(Object.values(MAPS).map((k) => [k, d.getMap(k).toJSON()])),
+    ...Object.fromEntries(Object.values(ARRAYS).map((k) => [k, d.getArray(k).toJSON()])),
+  });
 });
 
 routes.post('/run', (req, res) => {
@@ -231,12 +247,11 @@ routes.post('/approve', async (req, res) => {
     let pushed = false;
     let pushError: string | undefined;
     if (remote && token) {
-      const authed = remote.replace(/^https:\/\//, `https://x-access-token:${encodeURIComponent(token)}@`);
       try {
-        await git(repo, ['-c', 'credential.helper=', 'push', authed, 'main:main']);
+        await pushMain(repo, remote, token);
         pushed = true;
       } catch (e) {
-        pushError = (e as Error).message.split(authed).join(remote).split(token).join('***').split(encodeURIComponent(token)).join('***');
+        pushError = (e as Error).message;
         addStep({ kind: 'error', by, text: `Push failed: ${pushError.slice(0, 300)}`, commit });
       }
     }

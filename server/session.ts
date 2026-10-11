@@ -52,6 +52,11 @@ function load(id: string | undefined): SessionData | null {
   return s;
 }
 
+// With MongoDB, a project's transcripts are loaded into the cache when it opens (a fresh container has no files).
+export function preloadSessions(rows: { id: string; data: unknown }[]) {
+  for (const r of rows) if (!cache.has(key(r.id))) cache.set(key(r.id), r.data as SessionData);
+}
+
 function save(s: SessionData) {
   cache.set(key(s.id), s);
   mkdirSync(sessionsDir(), { recursive: true });

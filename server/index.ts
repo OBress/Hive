@@ -6,20 +6,42 @@ import { MAPS, SERVER_PORT, type Project, type TaskSpec } from '@hive/shared/typ
 import { authMiddleware, initAuth, wsAuthenticate } from './auth.ts';
 import { serverWrite, syncTaskStates } from './doc.ts';
 import { initModels } from './llm.ts';
-import { initMongo } from './mongo.ts';
+import { initMirror } from './mongo.ts';
 import { DATA_DIR } from './paths.ts';
 import {
   createProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setCloser, setOpener, setProjectDoc,
 } from './projects.ts';
 import { api, errorHandler } from './routes.ts';
+import { loadUsers } from './users.ts';
 import { disposeSandbox, warmSandbox } from './sandbox.ts';
 import { getEpoch, initEpoch, settings } from './settings.ts';
-import { recover, watchTasks } from './session.ts';
+import { preloadSessions, recover, watchTasks } from './session.ts';
+import { connectMongo, flushSessionsDb, loadDocDb, loadSessionsDb, mongoOn, saveDocDb } from './store.ts';
 import { ensureWorkspace } from './workspace.ts';
 
 const PORT = Number(process.env.PORT || SERVER_PORT);
 let saver: NodeJS.Timeout | undefined;
-const saveAll = () => { for (const [id, doc] of loadedDocs()) writeFileSync(docFile(id), Y.encodeStateAsUpdate(doc)); };
+// Every 2 s, save the docs that changed: to MongoDB when it is the store, else data/projects/<id>/doc.bin.
+const dirty = new Set<string>();
+let saving: Promise<unknown> = Promise.resolve();
+function saveAll(): Promise<unknown> {
+  const ids = [...dirty];
+  dirty.clear();
+  const docs = loadedDocs();
+  saving = saving.then(() => Promise.all(ids.map(async (id) => {
+    const doc = docs.get(id);
+    if (!doc) return;   // deleted since it changed
+    const state = Y.encodeStateAsUpdate(doc);
+    try {
+      if (mongoOn()) await saveDocDb(id, state);
+      else writeFileSync(docFile(id), state);
+    } catch (e) {
+      dirty.add(id);   // try again next round
+      console.error(`Saving project ${id} failed: ${(e as Error).message}`);
+    }
+  })));
+  return saving;
+}
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -36,10 +58,11 @@ app.use(errorHandler);
 const server = new Server({
   name: 'hive',
   quiet: true,
-  // Each project is one doc named by its id, saved in data/projects/<id>/doc.bin.
+  // Each project is one doc named by its id, kept in MongoDB or data/projects/<id>/doc.bin.
   async onLoadDocument({ documentName, document }) {
     if (!getProject(documentName)) throw new Error(`Unknown project ${documentName}`);
-    if (existsSync(docFile(documentName))) Y.applyUpdate(document, readFileSync(docFile(documentName)));
+    const state = mongoOn() ? await loadDocDb(documentName) : existsSync(docFile(documentName)) ? readFileSync(docFile(documentName)) : null;
+    if (state) Y.applyUpdate(document, state);
   },
   onAuthenticate: (data) => wsAuthenticate(data, getEpoch()),
   // Our direct connection keeps the doc loaded, so Hocuspocus's own shutdown would wait forever.
@@ -59,8 +82,10 @@ async function open(p: Project, seed?: TaskSpec[]) {
   const direct = await server.hocuspocus.openDirectConnection(p.id);
   directs.set(p.id, direct);
   setProjectDoc(p.id, direct.document!);
+  direct.document!.on('update', () => dirty.add(p.id));
   await inProject(p.id, async () => {
     await ensureWorkspace();
+    if (mongoOn()) preloadSessions(await loadSessionsDb(p.id));
     if (seed) serverWrite(() => { for (const t of seed) direct.document!.getMap<TaskSpec>(MAPS.tasks).set(t.id, t); });
     syncTaskStates();
     recover();
@@ -70,32 +95,37 @@ async function open(p: Project, seed?: TaskSpec[]) {
 setOpener((p) => open(p));
 // A deleted project: drop browsers on its doc, then our own connection, so Hocuspocus unloads it.
 setCloser(async (id) => {
+  dirty.delete(id);
+  await saving;   // a save already under way finishes before the project's files and rows go
   server.hocuspocus.closeConnections(id);
   await directs.get(id)?.disconnect().catch(() => {});
   directs.delete(id);
 });
 
 mkdirSync(DATA_DIR, { recursive: true });
-initEpoch(!registryExists());   // a fresh data/ (first run or `pnpm reset`) gets a new epoch
-const projects = loadProjects();
+await connectMongo();
+initMirror();
+await initEpoch(!registryExists());   // a fresh data/ (first run or `pnpm reset`) gets a new epoch
+const projects = await loadProjects();
+await loadUsers();
 initAuth();
-await Promise.all([initModels(), initMongo()]);
+await initModels();
 await server.listen(PORT);
 for (const p of projects) await open(p);
 // HIVE_SEED names a JSON file of tasks for a first project (the smoke test uses smoke-seed.json).
 const seed = process.env.HIVE_SEED;
 if (seed && !projects.length) {
-  await open(createProject('URL shortener', 'A tiny URL shortener API with tests.', 'seed'), (JSON.parse(readFileSync(seed, 'utf8')) as { tasks: TaskSpec[] }).tasks);
+  await open(await createProject('URL shortener', 'A tiny URL shortener API with tests.', 'seed'), (JSON.parse(readFileSync(seed, 'utf8')) as { tasks: TaskSpec[] }).tasks);
   console.log(`Seeded a project from ${seed}`);
 }
 warmSandbox();
-saver = setInterval(saveAll, 2000);
+saver = setInterval(() => void saveAll(), 2000);
 // Save once and exit on Ctrl+C / kill, so no orphan keeps writing an old doc.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     clearInterval(saver);
-    saveAll();
-    void disposeSandbox().finally(() => process.exit(0));
+    for (const id of loadedDocs().keys()) dirty.add(id);
+    void Promise.all([saveAll(), flushSessionsDb(), disposeSandbox()]).finally(() => process.exit(0));
   });
 }
 

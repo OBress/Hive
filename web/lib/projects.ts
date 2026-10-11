@@ -80,11 +80,11 @@ async function send<T>(method: string, path: string, body: Record<string, unknow
   return json as T;
 }
 
-export interface NewProject { name: string; goal: string; by: string; repoName: string; private: boolean; stack?: string }
+export interface NewProject { name: string; goal: string; by: string; createRepo: boolean; stack?: string }
 
-// Creates the project and its GitHub repo (with the person's GitHub sign-in).
-export async function createProject(p: NewProject): Promise<Project> {
-  const made = await send<Project>('POST', '/projects', { ...p });
+// With createRepo, the server also makes a private GitHub repo for it; repoError says why if it could not.
+export async function createProject(p: NewProject): Promise<Project & { repoError?: string }> {
+  const made = await send<Project & { repoError?: string }>('POST', '/projects', { ...p });
   await reloadProjects();
   return made;
 }

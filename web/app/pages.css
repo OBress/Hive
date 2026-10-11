@@ -615,6 +615,9 @@ button.hv-mention:hover { translate: 0 -2px; box-shadow: 2px 2px 0 var(--ink); }
 .hv-projects__new label { display: grid; gap: 6px; }
 .hv-projects__new label span { font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
 .hv-projects__new .hv-btn { align-self: flex-start; }
+.hv-projects__new label.hv-projects__check { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.hv-projects__check input { width: 20px; height: 20px; accent-color: var(--ink); }
+.hv-projects__new label.hv-projects__check span { font: 700 15px var(--display); text-transform: none; letter-spacing: -0.01em; }
 .hv-projects__err { margin: 0; padding: 8px 12px; background: var(--paper); border: 2px solid var(--ink); border-radius: var(--r-sm); font-size: 14px; }
 .hv-projects__msg { padding: 40px; text-align: center; font: 400 14px var(--mono); }
 .hv-top > .hv-projectswitch { display: inline-flex; text-decoration: none; align-items: center; gap: 4px; max-width: 220px; flex-shrink: 0; }
@@ -662,12 +665,8 @@ button.hv-mention:hover { translate: 0 -2px; box-shadow: 2px 2px 0 var(--ink); }
 .hv-projects__actions .hv-iconbtn--danger:hover { background: var(--red); color: #fff; }
 .hv-projects__actions .hv-projects__open { margin-left: auto; }
 
-.hv-projects__repo { position: relative; display: flex; align-items: center; }
-.hv-projects__repo > svg { position: absolute; left: 11px; pointer-events: none; }
-.hv-projects__repo .hv-input { padding-left: 34px; font: 400 14px var(--mono); }
-.hv-projects__new label.hv-projects__check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
-.hv-projects__check input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--ink); flex: none; cursor: pointer; }
-.hv-projects__new .hv-projects__check span { font: 700 15px var(--display); text-transform: none; letter-spacing: -0.01em; }
+.hv-projects__new label.hv-projects__check--ai { align-items: flex-start; }
+.hv-projects__check--ai input { flex: none; margin-top: 1px; }
 .hv-projects__check--ai { padding: 12px; background: var(--paper); border: 2px solid var(--ink); border-radius: var(--r-sm); box-shadow: var(--shadow-sm); }
 .hv-projects__new .hv-projects__check span b { display: inline-flex; align-items: center; gap: 6px; }
 .hv-projects__new .hv-projects__check span em { display: block; margin-top: 4px; font: 400 13px/1.4 var(--display); font-style: normal; }

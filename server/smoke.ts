@@ -1,10 +1,13 @@
 // End-to-end demo check against the fake provider: `pnpm --filter server smoke`.
 // Uses its own data folder in the OS temp dir, starts the server on a spare port, drives the 90-second demo over HTTP, prints PASS/FAIL per check.
+// With SMOKE_MONGODB_URI (a throwaway database: it is dropped first), the server stores everything in MongoDB, and the
+// run ends by restarting it on an empty data folder to check that projects, docs and transcripts come back.
 import { spawn } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { MongoClient } from 'mongodb';
 import type { ChatMessage, SessionView, Step, TaskSpec, TaskState } from '@hive/shared/types';
 import { git } from './git.ts';
 import { SERVER_DIR } from './paths.ts';
@@ -25,15 +28,23 @@ const port = await new Promise<number>((resolve) => {
 const root = `http://localhost:${port}/api`;
 let base = root;   // becomes /api/projects/<id> once the seeded project is known
 
+const MONGO = process.env.SMOKE_MONGODB_URI?.trim() ?? '';
+const mongo = MONGO ? await new MongoClient(MONGO).connect() : null;
+await mongo?.db().dropDatabase();
+
 rmSync(DATA_DIR, { recursive: true, force: true });
-const child = spawn(process.execPath, ['--import', 'tsx', 'index.ts'], {
-  cwd: SERVER_DIR,
-  env: { ...process.env, HIVE_DATA_DIR: DATA_DIR, HIVE_SEED: join(SERVER_DIR, 'smoke-seed.json'), LLM_PROVIDER: 'fake', FAKE_DELAY_MS: '20', PORT: String(port), MAX_PARALLEL: '2', MAX_STEPS: '20', SUPABASE_URL: '', SUPABASE_ANON_KEY: '', MONGODB_URI: '', GITHUB_REMOTE: '', GITHUB_TOKEN: '' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
 let log = '';
-child.stdout.on('data', (d) => { log += d; });
-child.stderr.on('data', (d) => { log += d; });
+function start() {
+  const c = spawn(process.execPath, ['--import', 'tsx', 'index.ts'], {
+    cwd: SERVER_DIR,
+    env: { ...process.env, HIVE_DATA_DIR: DATA_DIR, HIVE_SEED: join(SERVER_DIR, 'smoke-seed.json'), LLM_PROVIDER: 'fake', FAKE_DELAY_MS: '20', PORT: String(port), MAX_PARALLEL: '2', MAX_STEPS: '20', SUPABASE_URL: '', SUPABASE_ANON_KEY: '', MONGODB_URI: MONGO, GITHUB_REMOTE: '', GITHUB_TOKEN: '', DAYTONA_API_KEY: '', OPENCODE_URL: '' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  c.stdout.on('data', (d) => { log += d; });
+  c.stderr.on('data', (d) => { log += d; });
+  return c;
+}
+let child = start();
 
 async function call(method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
   const res = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -144,11 +155,27 @@ try {
 
   const authors = (await git(join(DATA_DIR, 'projects', projectId, 'workspace'), ['log', '--format=%an'])).split('\n');
   check('git log has commits by Hive Agent and by Ana', authors.includes('Hive Agent') && authors.includes('Ana'), [...new Set(authors.filter(Boolean))].join(', '));
+
+  if (mongo) {
+    // A redeploy: stop the server (it saves on SIGTERM), wipe the local data folder, start again.
+    const before = await state();
+    await new Promise((r) => { child.once('exit', r); child.kill('SIGTERM'); });
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    child = start();
+    const back = await until('restarted server', (st) => st.tasks && Object.keys(st.tasks).length === 4 && st, 20000);
+    check('after a restart on an empty disk, the projects come back from MongoDB', (await projects()).length === 2);
+    check('the doc comes back: tasks, statuses, steps and chat', Object.values(back.taskState).every((t) => t.status === 'done')
+      && back.steps.length === before.steps.length && back.chat.length === before.chat.length, `${back.steps.length} steps, ${back.chat.length} chat`);
+    const db = mongo.db();
+    const [sessions, mirrored] = await Promise.all([db.collection('sessions').countDocuments({ project: projectId }), db.collection('steps').countDocuments({ project: projectId })]);
+    check('transcripts and step history are in MongoDB', sessions === 4 && mirrored >= before.steps.length - 1, `${sessions} sessions, ${mirrored} steps`);
+  }
 } catch (e) {
   check('smoke run', false, (e as Error).message);
   console.log(log.split('\n').slice(-30).join('\n'));
 } finally {
   child.kill();
+  await mongo?.close();
 }
 
 const failed = results.filter((r) => !r[1]).length;

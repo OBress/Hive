@@ -163,20 +163,18 @@ function ProjectCard({ p, me, recent, onAction }: { p: Project; me: string; rece
   );
 }
 
-const slug = (s: string) => s.trim().replace(/[^\w.-]+/g, '-').replace(/^[-.]+|-+$/g, '').slice(0, 100);
-
 function NewProject({ me, first }: { me: string; first: boolean }) {
   const auth = useAuth();
   const [name, setName] = useState('');
   const [goal, setGoal] = useState('');
-  const [repoName, setRepoName] = useState('');
-  const [repoEdited, setRepoEdited] = useState(false);
-  const [isPrivate, setIsPrivate] = useState(true);
+  const [repo, setRepo] = useState(true);
   const [withStack, setWithStack] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [made, setMade] = useState<Project | null>(null);   // created, but its GitHub repo was not
   const [github, setGithub] = useState<boolean | null>(null);
+  const open = (p: Project) => { window.location.href = `/tasks${appQuery(me, p.id)}`; };
 
   // With sign-in on, the repo is made with the person's GitHub token, which the server keeps in memory only.
   useEffect(() => {
@@ -185,19 +183,23 @@ function NewProject({ me, first }: { me: string; first: boolean }) {
     void githubStatus().then((s) => setGithub(s.githubConnected), () => setGithub(false));
   }, [auth.ready, auth.auth, auth.login]);
 
-  const repo = repoEdited ? repoName : slug(name);
+  // Creates it (with the approved stack, if any); a repo that could not be made leaves the project and says why.
   const create = async (stack?: string) => {
-    const p = await createProject({ name: name.trim(), goal: goal.trim(), by: me, repoName: repo, private: isPrivate, stack });
-    window.location.href = `/tasks${appQuery(me, p.id)}`;
+    const p = await createProject({ name: name.trim(), goal: goal.trim(), by: me, createRepo: repo, stack });
+    if (!p.repoError) return open(p);
+    setReviewing(false);
+    setMade(p);
+    setErr(p.repoError);
   };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || busy || !github) return;
+    if (!name.trim() || busy || made) return;
     if (withStack) return setReviewing(true);
     setBusy(true);
     setErr('');
-    try { await create(); } catch (x) { setErr((x as Error).message); setBusy(false); }
+    try { await create(); } catch (x) { setErr((x as Error).message); }
+    setBusy(false);
   };
 
   return (
@@ -206,7 +208,7 @@ function NewProject({ me, first }: { me: string; first: boolean }) {
       <h2><Icon name="plus" size={20} /> {first ? 'Start your first project' : 'New project'}</h2>
       <label>
         <span>Name</span>
-        <input className="hv-input" value={name} maxLength={60} placeholder="To-do app" onChange={(e) => setName(e.target.value)} required />
+        <input className="hv-input" value={name} maxLength={60} placeholder="To-do app" onChange={(e) => setName(e.target.value)} required disabled={!!made} />
       </label>
       <label>
         <span>Goal</span>
@@ -214,34 +216,30 @@ function NewProject({ me, first }: { me: string; first: boolean }) {
           placeholder="What are you building? The planner reads this when you plan in chat."
           onChange={(e) => setGoal(e.target.value)} />
       </label>
-      <label>
-        <span>GitHub repo</span>
-        <div className="hv-projects__repo">
-          <Icon name="github" size={16} />
-          <input className="hv-input" value={repo} maxLength={100} placeholder="todo-app" aria-label="New GitHub repo name"
-            onChange={(e) => { setRepoEdited(true); setRepoName(e.target.value.replace(/[^\w.-]/g, '-')); }} />
-        </div>
-      </label>
       <label className="hv-projects__check">
-        <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} />
-        <span>Private repo</span>
+        <input type="checkbox" checked={repo} onChange={(e) => setRepo(e.target.checked)} disabled={!!made} />
+        <span>Create a private GitHub repo for it</span>
       </label>
       <label className="hv-projects__check hv-projects__check--ai">
-        <input type="checkbox" checked={withStack} onChange={(e) => setWithStack(e.target.checked)} />
+        <input type="checkbox" checked={withStack} onChange={(e) => setWithStack(e.target.checked)} disabled={!!made} />
         <span><b><Icon name="sparkle" size={14} /> Let AI pick the tech stack</b><em>Not technical? Hive drafts a stack and spec doc from your goal. You review and approve it before anything is created.</em></span>
       </label>
-      {github === false && (
+      {repo && github === false && !made && (
         <div className="hv-projects__gh">
-          <p>Hive creates a GitHub repo for every project. Connect GitHub so it can do that for you.</p>
+          <p>Connect GitHub so Hive can create the repo for you.</p>
           <button type="button" className="hv-btn hv-btn--ink hv-btn--sm" onClick={signIn}><Icon name="github" size={15} /> Connect GitHub</button>
         </div>
       )}
-      {err && <p className="hv-projects__err">{err}</p>}
-      <button className="hv-btn hv-btn--ink" disabled={!name.trim() || busy || !github || !repo}>
-        {busy ? <><i className="hv-spinner" /> Creating project and repo…</>
-          : withStack ? <>Draft the stack <Icon name="arrow" size={16} /></>
-          : <>Create project <Icon name="arrow" size={16} /></>}
-      </button>
+      {err && <p className="hv-projects__err">{made ? `${made.name} was created. ` : ''}{err}</p>}
+      {made ? (
+        <button type="button" className="hv-btn hv-btn--ink" onClick={() => open(made)}>Open {made.name} <Icon name="arrow" size={16} /></button>
+      ) : (
+        <button className="hv-btn hv-btn--ink" disabled={!name.trim() || busy}>
+          {busy ? <><i className="hv-spinner" /> {repo ? 'Creating project and repo…' : 'Creating…'}</>
+            : withStack ? <>Draft the stack <Icon name="arrow" size={16} /></>
+            : <>Create project <Icon name="arrow" size={16} /></>}
+        </button>
+      )}
     </form>
     {reviewing && <StackReview name={name.trim()} goal={goal.trim()} onApprove={create} onClose={() => setReviewing(false)} />}
     </>

@@ -28,6 +28,7 @@ hive/
   server/                 Node + TS via tsx, Express + Hocuspocus on :4000
     index.ts              HTTP + websocket, doc load/save, startup recovery
     paths.ts              data/ locations
+    github.ts             create a project's GitHub repo, push main (fetch + git, token scrubbed from errors)
     projects.ts           project list, per-project folders, the current-project context (AsyncLocalStorage)
     doc.ts                getDoc/setDoc and typed helpers; serverWrite(fn)
     llm.ts                generate() for openai (Luminal) / anthropic / fake; model selection
@@ -39,7 +40,8 @@ hive/
     graph.ts              graph op validation, cycles, ready set, layout
     planner.ts            chat (graph edits or cited answers), summarize()
     auth.ts               Supabase token verification, middleware, GitHub tokens in memory
-    mongo.ts              optional MongoDB mirror + history reads
+    store.ts              MongoDB storage (projects, docs, transcripts, epoch) when MONGODB_URI is set
+    mongo.ts              step/chat history in MongoDB + history reads
     routes.ts             all Express routes
     settings.ts           /api/config, doc epoch, push repo, env status
     smoke.ts              end-to-end demo check with LLM_PROVIDER=fake
@@ -82,6 +84,12 @@ Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and 
 - Every agent write and every human edit is its own commit. Agents commit as "Hive Agent"; people commit under their own name (GitHub noreply email when signed in).
 - **Endpoints that start work return 202**; results arrive through the Y.Doc.
 
+## Storage and hosting
+
+- **Local dev:** everything is files under `data/` (`pnpm reset` wipes it).
+- **Hosted (Railway, `server/Dockerfile`):** set `MONGODB_URI` and MongoDB holds the project list, each project's Y.Doc (saved every 2 s when it changed, and on SIGTERM), agent transcripts, the doc epoch and the step/chat history. The server refuses to start if `MONGODB_URI` is set but unreachable. The git workspaces and worktrees stay on disk: mount a Railway volume at `/app/data` so in-progress task branches survive redeploys (approved `main` is also on each project's GitHub repo).
+- Run `SMOKE_MONGODB_URI=mongodb://127.0.0.1:27017/hive_smoke pnpm --filter server smoke` to check the MongoDB path, including a restart on an empty disk. It drops that database first.
+
 ## Auth
 
 Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tables. When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set, every non-GET `/api/*` call needs `Authorization: Bearer <access token>` and the server replaces `by`/`from` with the verified GitHub login; the websocket requires the same token. The person's GitHub `provider_token` is kept in server memory only, for pushing on Approve. With Supabase unset, auth is off and `by`/`from` come from the body.
@@ -92,7 +100,7 @@ Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tabl
 |---|---|---|
 | GET /api/health | | `{ok, projects, provider, models}` |
 | GET /api/projects | | `{projects}`: only the caller's own and the ones shared with them |
-| POST /api/projects | `{name, goal, by, repoName, private, stack?}` | 201 the new project; creates its GitHub repo with the caller's token (428 if signed in without one) |
+| POST /api/projects | `{name, goal, by, createRepo?, stack?}` | 201 the new project; also creates its private GitHub repo unless `createRepo: false` (`repoError` if that fails) |
 | POST /api/stack | `{name, goal, notes?}` | `{stack}`: an AI draft stack/spec doc to review before creating |
 | GET /api/users?q= | | `{users}`: people who have signed in, for sharing |
 | GET /api/config | | `{auth, supabaseUrl, supabaseAnonKey, epoch}` |
@@ -146,4 +154,4 @@ We develop on Windows and demo on macOS. Use `path.join`, `fs.rmSync(..., {recur
 
 ## Cut order (if behind schedule)
 
-Cut in this order: MongoDB mirror → chat graph edits (keep catch-up answers) → GitHub push (keep the local merge) → hand off to a person (keep takeover and handback). Never cut the live stream, steer, or takeover and handback: they are the pitch.
+Cut in this order: MongoDB (local dev runs on files without it) → chat graph edits (keep catch-up answers) → GitHub push (keep the local merge) → hand off to a person (keep takeover and handback). Never cut the live stream, steer, or takeover and handback: they are the pitch.
