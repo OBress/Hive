@@ -85,6 +85,9 @@ When it's on:
 
 ## How the frontend should use this
 
+- `web/lib/mock.ts` is the live adapter: it maps the doc and REST onto the shapes the components use (`Task`, `TaskRun`, `Decision`...). Acceptance checks are stored inside `spec` under an "Acceptance checks:" heading so the agent reads them; `files` come from the task's commits; decisions are steps (ids `st_<n>`, so planner cites line up).
+- `pnpm reset` with browser tabs still open brings old state back: a connected tab syncs its copy of the doc into the fresh server. Close Hive tabs first, then reset and restart.
+
 - To build the UI with no API key, run the server with `LLM_PROVIDER=fake` in `.env`: scripted agents stream, test, merge and answer chat.
 - Ids: steps are `st_<n>` (`n` is the global order), sessions `s_<taskId>_<suffix>`, chat `c_...`.
 

@@ -1,96 +1,190 @@
 'use client';
 
-// PLACEHOLDER BACKEND. A local store that fakes the server (Planner, Builder, staleness,
-// conflicts, push) so the UI can be built and demoed before server/ exists.
-// When the server lands, replace useHive() with Y.Doc reads (lib/hive.ts) and the
-// actions with Yjs writes to `tasks` + POSTs to the API. Components shouldn't change.
+// LIVE BACKEND ADAPTER. Same exports and HiveState shape the components were built against, now
+// backed by the shared Y.Doc (lib/hive.ts) and the server's REST API (see INTEGRATION.md).
+// Reads come from the doc; the only doc writes are to `tasks`; every action is a REST call.
+// (Kept at this path so components don't change; the old local fake is in git history.)
 
 import { useSyncExternalStore } from 'react';
+import {
+  ARRAYS, MAPS,
+  type ChatMessage as DocChat, type SessionView, type Step, type TaskSpec, type TaskState,
+} from '@hive/shared/types';
+import { apiUrl, getProvider } from './hive';
 import { runSteps } from './steps';
-import type { ChatMessage, Conflict, Decision, Task, TaskRun } from './types';
+import type { ChatMessage, Conflict, Decision, RunStatus, Task, TaskRun } from './types';
 
 export interface HiveState {
   tasks: Record<string, Task>;
   runs: Record<string, TaskRun>;
   chat: ChatMessage[];
-  conflicts: Record<string, Conflict>;
+  conflicts: Record<string, Conflict>;     // the server has no conflict cards; merge conflicts show as blocked tasks
   decisions: Decision[];
   thinking: boolean;
   pushing: boolean;
   pushedUrl?: string;
   focus?: { id: string; at: number };
   toast?: { text: string; at: number };
+  // Raw server state for the live session view.
+  taskState: Record<string, TaskState>;
+  sessions: Record<string, SessionView>;
+  live: Record<string, string>;
+  steps: Step[];
 }
 
 export const DEMO_REQUEST = 'Build a URL shortener API: create, redirect, stats, with tests.';
 
-const PLAN: Task[] = [
-  { id: 'T1', title: 'Create short link', x: 40, y: 40, dependsOn: [], assignee: 'agent',
-    spec: 'POST /links takes {url}, validates it and returns {code, short} with 201. Codes are 6 characters, base62.',
-    acceptance: ['POST /links returns 201 and a 6-char code', 'Invalid URLs return 400'],
-    files: ['src/app.js', 'src/store.js', 'test/create.test.js'] },
-  { id: 'T2', title: 'Redirect', x: 440, y: 40, dependsOn: [], assignee: 'agent',
-    spec: 'GET /:code responds 302 to the stored URL and records the click.',
-    acceptance: ['Known code redirects with 302', 'Unknown code returns 404'],
-    files: ['src/app.js', 'test/redirect.test.js'] },
-  { id: 'T3', title: 'Click stats', x: 40, y: 320, dependsOn: ['T1', 'T2'], assignee: 'agent',
-    spec: 'GET /links/:code/stats returns total clicks and the time of the last click.',
-    acceptance: ['Returns clicks for a known code', 'Returns 404 for an unknown code'],
-    files: ['src/stats.js', 'test/stats.test.js'] },
-  { id: 'T4', title: 'README', x: 440, y: 320, dependsOn: ['T1', 'T2'], assignee: 'agent',
-    spec: 'Document the three endpoints with a curl example each.',
-    acceptance: ['Lists every endpoint with an example'],
-    files: ['README.md'] },
-  { id: 'T5', title: 'End-to-end test', x: 40, y: 600, dependsOn: ['T3'], assignee: 'agent',
-    spec: 'One test that creates a link, follows it twice and checks the stats.',
-    acceptance: ['create → redirect → stats flow passes'],
-    files: ['test/e2e.test.js'] },
-];
-
-let state: HiveState = {
-  tasks: {}, runs: {}, chat: [], conflicts: {}, decisions: [],
-  thinking: false, pushing: false,
+const EMPTY: HiveState = {
+  tasks: {}, runs: {}, chat: [], conflicts: {}, decisions: [], thinking: false, pushing: false,
+  taskState: {}, sessions: {}, live: {}, steps: [],
 };
+let state: HiveState = EMPTY;
+let local: Pick<HiveState, 'thinking' | 'pushing' | 'pushedUrl' | 'focus' | 'toast'> = { thinking: false, pushing: false };
+let thinkingFrom = -1;
 const listeners = new Set<() => void>();
-const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
+
+function subscribe(l: () => void) {
+  attach();
+  listeners.add(l);
+  return () => { listeners.delete(l); };
+}
 
 export function useHive(): HiveState {
-  return useSyncExternalStore(subscribe, () => state, () => state);
+  return useSyncExternalStore(subscribe, () => state, () => EMPTY);
 }
 
-function set(fn: (s: HiveState) => Partial<HiveState>) {
-  state = { ...state, ...fn(state) };
-  listeners.forEach((l) => l());
+function emit() { listeners.forEach((l) => l()); }
+function setLocal(patch: Partial<typeof local>) {
+  local = { ...local, ...patch };
+  state = { ...state, ...local };
+  emit();
 }
 
-// ---- helpers ---------------------------------------------------------------
+// ---- doc -> HiveState --------------------------------------------------------
 
-let seq = 0;
-const nid = (p: string) => `${p}${++seq}`;
-const now = () => new Date().toISOString();
-const sha = () => Array.from({ length: 7 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
-const timers = new Map<string, ReturnType<typeof setTimeout>>();
-const cooling = new Set<string>();
-const versions: Record<string, number> = {};
-const restarts: Record<string, number> = {};
-let autoRun = false;
-let conflictShown = false;
-
-const putTask = (t: Task) => set((s) => ({ tasks: { ...s.tasks, [t.id]: t } }));
-const blankRun = (id: string): TaskRun => ({ taskId: id, status: 'todo', builtFromVersion: 0, branch: `task/${id}`, note: '' });
-const putRun = (id: string, f: Partial<TaskRun>) => set((s) => ({
-  runs: { ...s.runs, [id]: { ...(s.runs[id] ?? blankRun(id)), ...f } },
-}));
-const say = (from: string, text: string, extra: Partial<ChatMessage> = {}) =>
-  set((s) => ({ chat: [...s.chat, { id: nid('m'), at: now(), from, text, ...extra }] }));
-function log(d: Omit<Decision, 'id' | 'at'>): string {
-  const id = `d${state.decisions.length + 1}`;
-  set((s) => ({ decisions: [...s.decisions, { id, at: now(), ...d }] }));
-  return id;
+let attached = false;
+let queued = false;
+function attach() {
+  if (attached || typeof window === 'undefined') return;
+  attached = true;
+  const doc = getProvider().document;
+  const rebuild = () => {
+    if (queued) return;
+    queued = true;
+    setTimeout(() => { queued = false; state = build(); emit(); }, 30);   // batches bursts; rAF would pause in background tabs
+  };
+  for (const k of Object.values(MAPS)) doc.getMap(k).observeDeep(rebuild);
+  for (const k of Object.values(ARRAYS)) doc.getArray(k).observeDeep(rebuild);
+  state = build();
 }
-export const toast = (text: string) => set(() => ({ toast: { text, at: Date.now() } }));
+
+const doc = () => getProvider().document;
+const specMap = () => doc().getMap<TaskSpec>(MAPS.tasks);
+
+// Acceptance checks live inside the spec text, so the agent reads them too.
+const CHECKS = '\n\nAcceptance checks:\n';
+function splitSpec(spec: string): { spec: string; acceptance: string[] } {
+  const i = spec.indexOf(CHECKS);
+  if (i < 0) return { spec, acceptance: [] };
+  return { spec: spec.slice(0, i), acceptance: spec.slice(i + CHECKS.length).split('\n').map((l) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean) };
+}
+const joinSpec = (spec: string, acc: string[]) => (acc.length ? `${spec.trim()}${CHECKS}${acc.map((a) => `- ${a}`).join('\n')}` : spec.trim());
+
+const DECISION_KIND: Partial<Record<Step['kind'], Decision['kind']>> = {
+  'spec-change': 'spec-change', steer: 'graph-change', takeover: 'graph-change', 'human-edit': 'graph-change',
+  handback: 'graph-change', handoff: 'graph-change', finish: 'agent-result', merge: 'merge', error: 'conflict', approve: 'push',
+};
+
+function build(): HiveState {
+  const d = doc();
+  const specs = d.getMap<TaskSpec>(MAPS.tasks).toJSON() as Record<string, TaskSpec>;
+  const taskState = d.getMap<TaskState>(MAPS.taskState).toJSON() as Record<string, TaskState>;
+  const sessions = d.getMap<SessionView>(MAPS.sessions).toJSON() as Record<string, SessionView>;
+  const live = d.getMap<string>(MAPS.live).toJSON() as Record<string, string>;
+  const steps = d.getArray<Step>(ARRAYS.steps).toArray();
+  const docChat = d.getArray<DocChat>(ARRAYS.chat).toArray();
+
+  const byTask: Record<string, Step[]> = {};
+  for (const s of steps) if (s.taskId) (byTask[s.taskId] ??= []).push(s);
+
+  const tasks: Record<string, Task> = {};
+  for (const sp of Object.values(specs)) {
+    const st = taskState[sp.id];
+    const files = [...new Set((byTask[sp.id] ?? []).filter((s) => s.path).map((s) => s.path!))].sort();
+    tasks[sp.id] = {
+      id: sp.id, title: sp.title, ...splitSpec(sp.spec), dependsOn: sp.deps, files,
+      assignee: st?.owner.kind === 'human' ? st.owner.name : 'agent', x: sp.x, y: sp.y, lastWhy: sp.why,
+    };
+  }
+
+  const runs: Record<string, TaskRun> = {};
+  for (const t of Object.values(tasks)) runs[t.id] = toRun(t, taskState, byTask[t.id] ?? []);
+
+  const chat: ChatMessage[] = docChat.map((m) => ({
+    id: m.id, at: m.at, from: m.from, text: m.text, cites: m.cites,
+    ops: m.taskIds?.filter((id) => specs[id]).map((id) => ({ op: 'addTask' as const, task: { id, title: specs[id].title } })),
+  }));
+  if (local.thinking && docChat.slice(thinkingFrom).some((m) => m.from === 'planner')) local = { ...local, thinking: false };
+
+  const decisions: Decision[] = steps.flatMap((s) => {
+    const kind = DECISION_KIND[s.kind];
+    if (!kind) return [];
+    const title = s.taskId ? specs[s.taskId]?.title ?? s.taskId : '';
+    const why = s.kind === 'spec-change' ? /changed the spec: (.+)$/.exec(s.text)?.[1] : undefined;
+    return [{ id: s.id, at: s.at, who: s.by, taskId: s.taskId, kind, summary: title ? `${title}: ${s.text}` : s.text, why, commit: s.commit }];
+  });
+
+  return { ...EMPTY, ...local, tasks, runs, chat, decisions, taskState, sessions, live, steps };
+}
+
+function toRun(t: Task, all: Record<string, TaskState>, steps: Step[]): TaskRun {
+  const st = all[t.id];
+  const human = st?.owner.kind === 'human';
+  const depsDone = t.dependsOn.every((d) => all[d]?.status === 'done');
+  const status: RunStatus =
+    st?.status === 'running' ? 'running'
+      : st?.status === 'done' ? 'done'
+        : st?.status === 'failed' ? 'failed'
+          : st?.status === 'needs_review' ? 'blocked'
+            : st?.status === 'paused' ? (human ? 'todo' : 'blocked')
+              : depsDone && !human ? 'ready' : 'todo';
+  const last = (f: (s: Step) => boolean) => [...steps].reverse().find(f);
+  const plan = last((s) => s.kind === 'plan');
+  const test = last((s) => s.kind === 'test');
+  const edit = last((s) => (s.kind === 'edit' || s.kind === 'human-edit') && !!s.diff);
+  const total = runSteps(t).length;
+  return {
+    taskId: t.id, status,
+    builtFromVersion: steps.filter((s) => s.kind === 'spec-change').length,
+    branch: st?.branch ?? `task/${t.id}`,
+    commit: last((s) => !!s.commit)?.commit,
+    diff: edit?.diff,
+    testOutput: test?.test?.output,
+    note: status === 'running' ? plan?.text ?? 'Agent is starting' : st?.note ?? (status === 'done' ? 'Tests pass · merged into main' : ''),
+    step: test ? Math.min(2 + Math.max(0, t.acceptance.length - 1), total - 2) : 1,
+  };
+}
+
+// ---- helpers -------------------------------------------------------------------
+
+export const toast = (text: string) => setLocal({ toast: { text, at: Date.now() } });
+const fail = (e: unknown) => toast((e as Error).message);
 const title = (id: string) => state.tasks[id]?.title ?? id;
-const isDone = (id: string) => state.runs[id]?.status === 'done';
+
+async function api<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(apiUrl(`/api${path}`), {
+    method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
+  return json as T;
+}
+
+function writeSpec(id: string, patch: Partial<TaskSpec>) {
+  const cur = specMap().get(id);
+  if (!cur) return;
+  specMap().set(id, JSON.parse(JSON.stringify({ ...cur, ...patch })));
+}
 
 export function downstreamOf(id: string): string[] {
   const out: string[] = [];
@@ -103,294 +197,112 @@ export function downstreamOf(id: string): string[] {
   return out;
 }
 
-// Short, stable task ids (T1, T2, …): titles can be renamed freely, the id never changes.
 export function nextTaskId(): string {
   const n = Math.max(0, ...Object.keys(state.tasks).map((k) => Number(k.replace(/^T/, '')) || 0));
   return `T${n + 1}`;
 }
 
-// ---- scheduler -------------------------------------------------------------
+const myName = () => new URLSearchParams(window.location.search).get('name') ?? 'Guest';
 
-function refreshReady() {
-  for (const t of Object.values(state.tasks)) {
-    const st = state.runs[t.id]?.status ?? 'todo';
-    const depsDone = t.dependsOn.every(isDone);
-    if (t.assignee !== 'agent') continue;
-    if (st === 'todo' && depsDone) putRun(t.id, { status: 'ready', note: 'Dependencies done' });
-    if (st === 'ready' && !depsDone) putRun(t.id, { status: 'todo', note: '' });
-  }
-}
-
-function schedule() {
-  refreshReady();
-  if (!autoRun) return;
-  let running = Object.values(state.runs).filter((r) => r.status === 'running').length;
-  const candidates = Object.values(state.tasks)
-    .filter((t) => {
-      const st = state.runs[t.id]?.status;
-      return t.assignee === 'agent' && !cooling.has(t.id) && (st === 'ready' || st === 'stale') && t.dependsOn.every(isDone);
-    })
-    .sort((a, b) => a.y - b.y || a.x - b.x);
-  for (const t of candidates) {
-    if (running >= 2) break;   // at most two Builder runs at once
-    startRun(t.id);
-    running++;
-  }
-}
-
-function startRun(id: string) {
-  putRun(id, {
-    status: 'running', builtFromVersion: versions[id] ?? 0,
-    note: restarts[id] ? `Rebuilding with the new spec (restart ${restarts[id]}/3)` : 'Builder is writing code',
-    commit: undefined, diff: undefined, testOutput: undefined, step: 1,
-  });
-  const ms = id === 'T3' ? 9000   // Stats builds slowly so there's time to change its spec on stage
-    : 3500 + Math.random() * 2000;
-  timers.set(id, setTimeout(() => finishRun(id), ms));
-
-  // Walk the checkpoints (write code, each test, commit) evenly across the run; merge happens in finishRun.
-  const steps = runSteps(state.tasks[id]);
-  const working = steps.length - 2;
-  const version = versions[id] ?? 0;
-  for (let i = 2; i <= working; i++) {
-    setTimeout(() => {
-      const r = state.runs[id];
-      if (r?.status !== 'running' || r.builtFromVersion !== version) return;   // aborted or restarted
-      putRun(id, { step: i, note: steps[i].startsWith('Test: ') ? `Testing: ${steps[i].slice(6)}` : steps[i] === 'Commit' ? 'Committing to the task branch' : steps[i] });
-    }, ((i - 1) / working) * ms);
-  }
-}
-
-function finishRun(id: string) {
-  timers.delete(id);
-  const t = state.tasks[id];
-  if (!t) return;
-  const commit = sha();
-  const diff = fakeDiff(t);
-  const testOutput = fakeTests(t);
-  const rival = Object.values(state.tasks).find((o) =>
-    o.id !== id && isDone(o.id) && o.files.includes('src/app.js') && t.files.includes('src/app.js'));
-
-  if (rival && !conflictShown) {
-    conflictShown = true;
-    putRun(id, { status: 'blocked', commit, diff, testOutput, note: 'Merge conflict in src/app.js' });
-    const cid = nid('c');
-    set((s) => ({ conflicts: { ...s.conflicts, [cid]: {
-      id: cid, taskA: rival.id, taskB: id, files: ['src/app.js'], status: 'open',
-      hunks: [
-        "app.get('/health', (req, res) => res.json({ ok: true }));",
-        `<<<<<<< task/${rival.id}`,
-        "app.post('/links', createLink);",
-        '=======',
-        "app.get('/:code', redirect);",
-        `>>>>>>> task/${id}`,
-        'module.exports = app;',
-      ].join('\n'),
-      proposal: [
-        "app.get('/health', (req, res) => res.json({ ok: true }));",
-        "app.post('/links', createLink);",
-        "app.get('/:code', redirect);",
-        'module.exports = app;',
-      ].join('\n'),
-    } } }));
-    log({ who: 'builder', taskId: id, kind: 'conflict', summary: `${title(rival.id)} and ${title(id)} both changed src/app.js` });
-    say('builder', `Merging task/${id} conflicted with task/${rival.id} in src/app.js. Proposing a merge and running the full suite…`);
-    setTimeout(() => {
-      if (state.conflicts[cid]?.status !== 'open') return;
-      set((s) => ({ conflicts: { ...s.conflicts, [cid]: {
-        ...s.conflicts[cid], status: 'auto-resolved', proposalPassesTests: true, rule: 'Full test suite passes (6/6)' } } }));
-      completeMerge(id, commit, 'proposal applied, tests pass');
-    }, 4000);
-    return;
-  }
-
-  putRun(id, { status: 'done', commit, diff, testOutput, note: 'Tests pass · merged into main' });
-  log({ who: 'builder', taskId: id, kind: 'agent-result', summary: `${t.title}: tests pass, merged into main`, commit });
-  say('builder', `${t.title} is green and merged into main (${commit}).`);
-  schedule();
-}
-
-function completeMerge(id: string, commit: string, how: string) {
-  putRun(id, { status: 'done', commit, note: `Merged into main · ${how}` });
-  log({ who: 'builder', taskId: id, kind: 'merge', summary: `${title(id)} merged into main: ${how}`, commit });
-  say('builder', `${title(id)} merged into main (${commit}): ${how}.`);
-  schedule();
-}
-
-// ---- actions (the UI calls only these) -------------------------------------
+// ---- actions (the UI calls only these) ------------------------------------------
 
 export function moveTask(id: string, x: number, y: number) {
-  const t = state.tasks[id];
-  if (t) putTask({ ...t, x, y });
+  const cur = specMap().get(id);
+  if (cur && (cur.x !== x || cur.y !== y)) writeSpec(id, { x, y });
 }
 
 export function updateTask(id: string, fields: Partial<Task>, by: string) {
-  const prev = state.tasks[id];
-  if (!prev) return;
-  putTask({ ...prev, ...fields });
-  const specChanged = (fields.spec !== undefined && fields.spec !== prev.spec)
-    || (fields.acceptance !== undefined && JSON.stringify(fields.acceptance) !== JSON.stringify(prev.acceptance));
-
-  if (fields.assignee !== undefined && fields.assignee !== prev.assignee) {
-    log({ who: by, taskId: id, kind: 'graph-change', summary: `${prev.title} assigned to ${fields.assignee}` });
-    if (fields.assignee !== 'agent' && state.runs[id]?.status === 'ready') putRun(id, { status: 'todo', note: '' });
-    schedule();
+  const cur = specMap().get(id);
+  if (!cur) return;
+  if (fields.title !== undefined || fields.spec !== undefined || fields.acceptance !== undefined) {
+    const prev = splitSpec(cur.spec);
+    const spec = joinSpec(fields.spec ?? prev.spec, fields.acceptance ?? prev.acceptance);
+    writeSpec(id, spec !== cur.spec
+      ? { title: fields.title ?? cur.title, spec, editedBy: by, why: fields.lastWhy ?? '' }
+      : { title: fields.title ?? cur.title });
   }
-  if (!specChanged) return;
+  if (fields.files !== undefined) toast('Files come from the commits in the task\'s worktree.');
+  if (fields.assignee !== undefined && fields.assignee !== state.tasks[id]?.assignee) void assign(id, fields.assignee, by);
+}
 
-  versions[id] = (versions[id] ?? 0) + 1;
-  log({ who: by, taskId: id, kind: 'spec-change', summary: `${prev.title}: spec changed`, why: fields.lastWhy });
-  for (const t of [id, ...downstreamOf(id)]) {
-    const r = state.runs[t];
-    if (!r || r.status === 'todo' || r.status === 'ready') continue;
-    const timer = timers.get(t);
-    if (timer) { clearTimeout(timer); timers.delete(t); }
-    putRun(t, { status: 'stale', note: t === id ? 'Spec changed · rebuilding in 1.5 s' : `Spec changed upstream (${title(id)})` });
-  }
-  if (state.runs[id]?.status !== 'stale') return;
-  cooling.add(id);
-  setTimeout(() => {
-    cooling.delete(id);
-    restarts[id] = (restarts[id] ?? 0) + 1;
-    if (restarts[id] > 3) { putRun(id, { note: 'Restarted 3 times · waiting for a person' }); return; }
-    autoRun = true;
-    schedule();
-  }, 1500);
+// Assignee picker -> takeover (me), handback (agent, from a person) or handoff (anyone else).
+async function assign(id: string, to: string, by: string) {
+  try {
+    const human = state.taskState[id]?.owner.kind === 'human';
+    if (to === 'agent') {
+      if (human) await api('POST', `/tasks/${id}/handback`, { by, note: '' });
+    } else if (to === by) {
+      await api('POST', `/tasks/${id}/takeover`, { by });
+    } else {
+      await api('POST', `/tasks/${id}/handoff`, { by, to, note: '' });
+      toast(`${title(id)} handed to ${to} with a summary.`);
+    }
+  } catch (e) { fail(e); }
 }
 
 export function addEdge(from: string, to: string, by: string) {
-  const t = state.tasks[to];
-  if (!t || from === to || t.dependsOn.includes(from)) return;
+  const t = specMap().get(to);
+  if (!t || from === to || t.deps.includes(from)) return;
   if (downstreamOf(to).includes(from)) {
     toast(`That edge would make a cycle: ${title(to)} already leads to ${title(from)}.`);
     return;
   }
-  putTask({ ...t, dependsOn: [...t.dependsOn, from] });
-  log({ who: by, taskId: to, kind: 'graph-change', summary: `${title(to)} now depends on ${title(from)}` });
-  schedule();
+  writeSpec(to, { deps: [...t.deps, from], editedBy: by });
 }
 
 export function removeEdge(from: string, to: string, by: string) {
-  const t = state.tasks[to];
-  if (!t) return;
-  putTask({ ...t, dependsOn: t.dependsOn.filter((d) => d !== from) });
-  log({ who: by, taskId: to, kind: 'graph-change', summary: `${title(to)} no longer depends on ${title(from)}` });
-  schedule();
+  const t = specMap().get(to);
+  if (t) writeSpec(to, { deps: t.deps.filter((d) => d !== from), editedBy: by });
 }
 
 export function runReady(taskId?: string) {
-  autoRun = true;
+  const by = myName();
   if (taskId) {
-    const t = state.tasks[taskId];
-    const st = state.runs[taskId]?.status;
-    if (!t) return;
-    if (st === 'running') return toast(`${t.title} is already building.`);
-    if (!t.dependsOn.every(isDone)) return toast(`${t.title} is waiting on its dependencies.`);
-    startRun(taskId);
+    api('POST', `/tasks/${taskId}/start`, { by }).catch(fail);
     return;
   }
-  const before = Object.values(state.runs).filter((r) => r.status === 'running').length;
-  schedule();
-  const after = Object.values(state.runs).filter((r) => r.status === 'running').length;
-  if (after === before && after === 0) toast('No tasks are ready yet.');
+  api<{ started: string[] }>('POST', '/run', { by })
+    .then((r) => { if (!r.started.length && !Object.values(state.runs).some((x) => x.status === 'running')) toast('No tasks are ready yet.'); })
+    .catch(fail);
 }
 
-export function resolveConflict(id: string, choice: 'ours' | 'theirs' | 'proposal', by: string) {
-  const c = state.conflicts[id];
-  if (!c || c.status !== 'open') return;
-  set((s) => ({ conflicts: { ...s.conflicts, [id]: { ...c, status: 'resolved', rule: `${by} picked ${choice}` } } }));
-  completeMerge(c.taskB, state.runs[c.taskB]?.commit ?? sha(), `${by} picked ${choice}`);
+export function resolveConflict(_id: string, _choice: 'ours' | 'theirs' | 'proposal', _by: string) {
+  toast('Merge conflicts are resolved by taking over the task.');
 }
 
-export function push(by: string, repo: string | null) {
-  if (!repo) return toast('Connect a GitHub repo on the Overview page first.');
-  set(() => ({ pushing: true }));
-  setTimeout(() => {
-    const c = sha();
-    set(() => ({ pushing: false, pushedUrl: `https://github.com/${repo}/commit/${c}` }));
-    log({ who: by, kind: 'push', summary: 'Tests pass on main · pushed to GitHub', commit: c });
-    say('builder', `Full suite passes on main. Pushed ${c} to GitHub.`);
-  }, 2000);
+// Approve: the server runs the tests on main and pushes to GITHUB_REMOTE (the repo field is informational).
+export async function push(by: string, _repo: string | null) {
+  setLocal({ pushing: true });
+  try {
+    const r = await api<{ ok: boolean; commit: string; pushed: boolean; url: string; pushError?: string }>('POST', '/approve', { by });
+    if (r.pushed && r.url) setLocal({ pushedUrl: `${r.url}/commit/${r.commit}` });
+    else toast(`Tests pass on main (${r.commit}). ${r.pushError ? `Push failed: ${r.pushError}` : 'Not pushed: the server has no GITHUB_REMOTE / token.'}`);
+  } catch (e) {
+    fail(e);
+  } finally {
+    setLocal({ pushing: false });
+  }
 }
 
 export function focusTask(id: string) {
-  set(() => ({ focus: { id, at: Date.now() } }));
+  setLocal({ focus: { id, at: Date.now() } });
 }
 
 export function sendChat(text: string, by: string) {
-  say(by, text);
-  set(() => ({ thinking: true }));
-  setTimeout(() => { set(() => ({ thinking: false })); planner(text, by); },
-    Object.keys(state.tasks).length ? 1400 : 2200);
+  thinkingFrom = doc().getArray(ARRAYS.chat).length;
+  setLocal({ thinking: true });
+  setTimeout(() => { if (local.thinking) setLocal({ thinking: false }); }, 60000);
+  api('POST', '/chat', { from: by, text }).catch((e) => { setLocal({ thinking: false }); fail(e); });
 }
 
-function planner(text: string, by: string) {
-  const isQuestion = /\bwhy\b|\?\s*$/i.test(text);
-  if (isQuestion && state.decisions.length) return answer(text);
-  if (!Object.keys(state.tasks).length) return createPlan(by);
+// ---- live session actions (watch, steer, take over, edit, hand back) --------------
 
-  const id = nextTaskId();
-  const lowest = Math.max(...Object.values(state.tasks).map((t) => t.y));
-  putTask({ id, title: text.slice(0, 40), spec: text, acceptance: [], dependsOn: [], files: [], assignee: 'agent', x: 440, y: lowest + 280 });
-  log({ who: 'planner', taskId: id, kind: 'graph-change', summary: `Added task ${id} from ${by}'s message` });
-  say('planner', `Added “${text.slice(0, 40)}” as a new task. Drag from another node to give it a dependency.`,
-    { ops: [{ op: 'addTask', task: { id, title: text.slice(0, 40) } }] });
-  schedule();
-}
-
-function createPlan(by: string) {
-  PLAN.forEach((t, i) => setTimeout(() => { putTask({ ...t }); refreshReady(); }, i * 180));
-  setTimeout(() => {
-    const did = log({ who: 'planner', kind: 'graph-change', summary: `Planned 5 tasks from ${by}'s request` });
-    say('planner', 'Here’s the plan: five tasks. Create and Redirect can start right away; Stats and the README wait for both, and the end-to-end test waits for Stats.', {
-      ops: [
-        ...PLAN.map((t) => ({ op: 'addTask' as const, task: { id: t.id, title: t.title } })),
-        ...PLAN.flatMap((t) => t.dependsOn.map((d) => ({ op: 'addEdge' as const, from: d, to: t.id }))),
-      ],
-      cites: [did],
-    });
-  }, PLAN.length * 180 + 100);
-}
-
-function answer(q: string) {
-  const mentioned = [...q.matchAll(/@(T\d+)/gi)].map((m) => m[1].toUpperCase());
-  const words = q.replace(/@\S+/g, ' ').toLowerCase().split(/\W+/).filter((w) => w.length > 3);
-  const hits = state.decisions.filter((d) => (d.taskId && mentioned.includes(d.taskId))
-    || words.some((w) => `${d.summary} ${d.why ?? ''}`.toLowerCase().includes(w))).slice(-3);
-  const why = [...hits].reverse().find((d) => d.why);
-  const result = why && [...state.decisions].reverse().find((d) =>
-    d.taskId === why.taskId && (d.kind === 'agent-result' || d.kind === 'merge') && d.at > why.at);
-  const cites = [why?.id, result?.id, ...hits.map((h) => h.id)].filter((x, i, a): x is string => !!x && a.indexOf(x) === i).slice(0, 3);
-  const text = why
-    ? `${why.who} changed ${title(why.taskId ?? '')} at ${new Date(why.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}: “${why.why}”.`
-      + (result ? ` The rebuild passed its tests in ${result.commit}.` : ' The rebuild is still running.')
-    : hits.length
-      ? `Here’s what the log says: ${hits.map((h) => h.summary).join('; ')}.`
-      : 'Nothing in the decision log covers that yet.';
-  say('planner', text, { cites });
-}
-
-// ---- fake build output -----------------------------------------------------
-
-function fakeDiff(t: Task): string {
-  const file = t.files.find((f) => f.startsWith('src/')) ?? t.files[0] ?? 'src/app.js';
-  const test = t.files.find((f) => f.startsWith('test/')) ?? `test/${t.id}.test.js`;
-  return [
-    `diff --git a/${file} b/${file}`,
-    `@@ -1,4 +1,${8 + t.acceptance.length} @@`,
-    " const { store } = require('./store');",
-    `-// TODO: ${t.id}`,
-    `+// ${t.title}`,
-    `+function ${t.id.replace(/\W/g, '')}(req, res) {`,
-    ...t.spec.split('. ').slice(0, 2).map((s) => `+  // ${s.replace(/\.$/, '')}`),
-    '+  res.statusCode = 200;',
-    '+}',
-    `diff --git a/${test} b/${test}`,
-    ...t.acceptance.map((a) => `+test('${a}', async () => { /* … */ });`),
-  ].join('\n');
-}
-
-function fakeTests(t: Task): string {
-  const lines = t.acceptance.map((a, i) => `✔ ${a} (${12 + i * 7}ms)`);
-  return [`▶ ${t.title}`, ...lines.map((l) => `  ${l}`), `ℹ tests ${lines.length} · pass ${lines.length} · fail 0`].join('\n');
-}
+export const steer = (sessionId: string, text: string, by: string) =>
+  api('POST', `/sessions/${sessionId}/steer`, { from: by, text }).catch(fail);
+export const takeover = (id: string, by: string) => api('POST', `/tasks/${id}/takeover`, { by }).catch(fail);
+export const handback = (id: string, by: string, note: string) => api('POST', `/tasks/${id}/handback`, { by, note }).catch(fail);
+export const listFiles = (id: string) => api<{ files: string[] }>('GET', `/tasks/${id}/files`).then((r) => r.files);
+export const readFile = (id: string, path: string) =>
+  api<{ content: string }>('GET', `/tasks/${id}/file?path=${encodeURIComponent(path)}`).then((r) => r.content);
+export const saveFile = (id: string, path: string, content: string, by: string) =>
+  api<{ commit: string | null }>('PUT', `/tasks/${id}/file`, { path, content, by });
