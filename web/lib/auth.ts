@@ -95,8 +95,10 @@ export function useAuth(): AuthState {
 export const accessToken = () => session?.access_token ?? '';
 export const authHeaders = (): Record<string, string> => (session ? { Authorization: `Bearer ${session.access_token}` } : {});
 
-export function signIn() {
-  void supabase?.auth.signInWithOAuth({ provider: 'github', options: { scopes: 'repo', redirectTo: window.location.href } });
+// After GitHub, come back to `path` on this site (default: the page you're on).
+export function signIn(path?: string) {
+  const redirectTo = path ? new URL(path, window.location.origin).href : window.location.href;
+  void supabase?.auth.signInWithOAuth({ provider: 'github', options: { scopes: 'repo', redirectTo } });
 }
 export function signOut() {
   void supabase?.auth.signOut().then(() => window.location.reload());

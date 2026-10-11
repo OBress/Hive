@@ -227,7 +227,7 @@ function NewProject({ me, first }: { me: string; first: boolean }) {
       {repo && github === false && !made && (
         <div className="hv-projects__gh">
           <p>Connect GitHub so Hive can create the repo for you.</p>
-          <button type="button" className="hv-btn hv-btn--ink hv-btn--sm" onClick={signIn}><Icon name="github" size={15} /> Connect GitHub</button>
+          <button type="button" className="hv-btn hv-btn--ink hv-btn--sm" onClick={() => signIn()}><Icon name="github" size={15} /> Connect GitHub</button>
         </div>
       )}
       {err && <p className="hv-projects__err">{made ? `${made.name} was created. ` : ''}{err}</p>}

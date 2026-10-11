@@ -1,15 +1,17 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState } from 'react';
+import { signIn, useAuth } from '@/lib/auth';
 import { useRouter } from 'next/navigation';
+import { ApproveDemo, AskDemo, SessionDemo, TakeoverDemo } from '@/components/LandingDemos';
 import { StatusSticker, type DisplayStatus } from '@/components/Status';
 import { Avatar, Icon, tilt, type IconName } from '@/components/ui';
 
 // "/" is the landing page. With ?name= (the demo URLs) it skips straight to the project list.
 export default function Landing() {
   const router = useRouter();
-  const [name, setName] = useState('');
+  const auth = useAuth();
   const [skipping, setSkipping] = useState(false);
 
   useEffect(() => {
@@ -19,9 +21,10 @@ export default function Landing() {
     }
   }, [router]);
 
-  const join = (e: FormEvent) => {
-    e.preventDefault();
-    router.push(`/projects?name=${encodeURIComponent(name.trim() || 'Guest')}`);
+  // GitHub OAuth through Supabase, landing on the project list. Already signed in, or sign-in off: just go there.
+  const connect = () => {
+    if (auth.auth && !auth.login) signIn('/projects');
+    else router.push('/projects');
   };
 
   if (skipping) return null;
@@ -38,7 +41,8 @@ export default function Landing() {
         </Link>
         <nav className="hv-land__links" aria-label="Sections">
           <a href="#how">How it works</a>
-          <a href="#features">Features</a>
+          <a href="#features">Try it</a>
+          <a href="#projects">Projects</a>
           <a href="#under">Under the hood</a>
         </nav>
         <Link href="/tasks" className="hv-btn hv-btn--ink hv-btn--sm">Open workspace <Icon name="arrow" size={14} /></Link>
@@ -54,19 +58,19 @@ export default function Landing() {
               Builder agents take each ready task, write the code on its own branch and let the tests decide.
               Change your mind halfway and only the affected task rebuilds.
             </p>
-            <form className="hv-land__join" onSubmit={join}>
-              <input className="hv-input" value={name} onChange={(e) => setName(e.target.value)}
-                placeholder="Your name" aria-label="Your name" maxLength={24} />
-              <button className="hv-btn hv-btn--hot hv-btn--lg">Join the workspace <Icon name="arrow" /></button>
-            </form>
-            <p className="hv-land__hint">Open it in two windows with different names to watch edits sync.</p>
+            <div className="hv-land__join">
+              <button className="hv-btn hv-btn--hot hv-btn--lg" onClick={connect} disabled={!auth.ready}>
+                <Icon name="github" /> {auth.login ? 'Open your projects' : 'Connect to GitHub'} <Icon name="arrow" />
+              </button>
+            </div>
+            <p className="hv-land__hint">Anyone can sign up, but new accounts must be approved before they can use Hive.</p>
           </div>
           <DemoGraph />
         </section>
 
         <ul className="hv-land__strip" aria-label="Highlights">
-          {['Planner agent', '2 builds at once', 'Real git commits', 'Tests decide', 'Every decision logged'].map((t, i) => (
-            <li key={t} className={`hv-sticker ${['hv-sticker--blue', 'hv-sticker--paper', 'hv-sticker--ink', 'hv-sticker--green', 'hv-sticker--hot'][i]}`} style={tilt(t, 4)}>{t}</li>
+          {['Watch agents live', 'Steer mid-run', 'Take over & hand back', 'Hand off with a summary', 'Answers cite steps', 'Push to GitHub'].map((t, i) => (
+            <li key={t} className={`hv-sticker ${['hv-sticker--blue', 'hv-sticker--paper', 'hv-sticker--ink', 'hv-sticker--green', 'hv-sticker--hot', 'hv-sticker--paper'][i]}`} style={tilt(t, 4)}>{t}</li>
           ))}
         </ul>
 
@@ -85,47 +89,38 @@ export default function Landing() {
         </section>
 
         <section id="features" className="hv-land__section">
-          <SectionHead kicker="Features" title="Built for people and agents working at once" />
-          <div className="hv-land__features">
-            <Feature title="Change the spec mid-build" text="Edit a task while it's building and Hive marks it stale, stops the run and rebuilds just that task. Everything that already passed stays put. Hive asks why, and the answer goes into the log.">
-              <div className="hv-land__mock">
-                <StatusSticker status="stale" size="lg" />
-                <p className="hv-why" style={tilt('why', 2)}>“Stats should count clicks per day, not total.”</p>
-                <span className="hv-land__mockmeta"><Avatar name="Maya" size={22} /> Maya changed <b>#T3 Click stats</b></span>
-              </div>
-            </Feature>
+          <SectionHead kicker="Try it here" title="The real workspace, in miniature" />
+          <p className="hv-land__lede">Each card runs the same flow the app does, scripted so you can click through it without an account.</p>
+          <div className="hv-land__demos">
+            <Demo n="01" title="Watch an agent work, then redirect it"
+              text="Every step streams to every screen: its plan, the file it's typing, tests going red then green. Type into its session and it picks up your message at its next step.">
+              <SessionDemo />
+            </Demo>
+            <Demo n="02" title="Take over, edit, hand back" flip
+              text="Pause the agent and the task is yours. Each save is a commit under your name. Hand it back and the agent continues from your edit, or hand it to a teammate with an auto-written summary.">
+              <TakeoverDemo />
+            </Demo>
+            <Demo n="03" title="Ask what happened, get receipts"
+              text="Late to the party? Ask the Planner in chat. It answers from the step history and cites the exact steps, so you can check the work instead of trusting it.">
+              <AskDemo />
+            </Demo>
+            <Demo n="04" title="Approve and ship" flip
+              text="When the graph is green, Approve runs the tests on main and pushes to the project's private GitHub repo, with commits from agents and people side by side.">
+              <ApproveDemo />
+            </Demo>
+          </div>
+        </section>
 
-            <Feature title="Conflicts, settled by tests" text="When two builders touch the same file, Hive opens a conflict card with both sides. An AI merge is proposed and applied only if the tests pass. Otherwise a person picks A or B.">
-              <div className="hv-land__mock hv-land__mock--conflict">
-                <div className="hv-land__sides">
-                  <pre><b>A · #T1</b>{'\n'}app.post(&apos;/links&apos;, create)</pre>
-                  <pre><b>B · #T2</b>{'\n'}app.get(&apos;/:code&apos;, go)</pre>
-                </div>
-                <pre className="hv-land__merged"><b>Merged · tests pass ✓</b>{'\n'}app.post(&apos;/links&apos;, create){'\n'}app.get(&apos;/:code&apos;, go)</pre>
-              </div>
-            </Feature>
-
-            <Feature title="Ask why, get receipts" text="Every spec change, graph edit, agent result, merge and push is recorded. Ask the Planner why something is the way it is and it answers from that log, citing decision ids you can click.">
-              <div className="hv-land__mock hv-land__mock--ink">
-                <div className="hv-bubble"><b>Why are codes 6 characters?</b></div>
-                <div className="hv-bubble hv-land__answer">
-                  Sam set base62 codes to keep links short while leaving room for 56B links.
-                  <span className="hv-cites"><span>Sources</span><span className="hv-cite">#D4</span><span className="hv-cite">#D9</span></span>
-                </div>
-              </div>
-            </Feature>
-
-            <Feature title="See everything live" text="Everyone shares one document. You see who is online, which task they have open, what each agent is doing, the commit history and when work happened.">
-              <div className="hv-land__mock">
-                <div className="hv-land__presence">
-                  <Avatar name="planner" agent busy size={40} />
-                  <Avatar name="builder" agent busy size={40} />
-                  <span className="hv-presence__gap" />
-                  <Avatar name="Maya" size={40} /><Avatar name="Sam" size={40} /><Avatar name="Priya" size={40} />
-                </div>
-                <span className="hv-land__mockmeta"><span className="hv-node__commit">a3f9c21</span> task/T2 · Redirect: tests pass</span>
-              </div>
-            </Feature>
+        <section id="projects" className="hv-land__section">
+          <SectionHead kicker="Projects" title="Every project gets its own repo and room" />
+          <div className="hv-land__grid">
+            {PROJECT_FEATURES.map((f) => (
+              <article key={f.title} className="hv-card hv-land__mini" style={tilt(f.title, 1)}>
+                <span className="hv-land__stepicon"><Icon name={f.icon} size={20} /></span>
+                <h3>{f.title}</h3>
+                <p>{f.text}</p>
+              </article>
+            ))}
           </div>
         </section>
 
@@ -144,17 +139,17 @@ export default function Landing() {
             ))}
           </div>
           <p className="hv-land__note">
-            No database: the server keeps a single Y.Doc in memory and saves it to disk every two seconds.
-            Only the server holds the API key, and agent output is checked before it is written.
+            Locally everything lives in files under <code>data/</code>; hosted, MongoDB keeps the docs and history.
+            Sign-in is GitHub through Supabase. API keys and GitHub tokens stay on the server, and agent test runs get no keys at all.
           </p>
         </section>
 
         <section className="hv-land__cta hv-card hv-card--blue">
           <h2>Try the demo in three windows</h2>
-          <p>Open the workspace as Maya, Sam and Priya. Send the demo request, change a spec while it builds, and push when every test is green.</p>
+          <p>Open Hive as Ana, Ben and Cal. Start a project, steer an agent, take over a task, ask what happened, then approve and push.</p>
           <div className="hv-land__ctabtns">
-            {['Maya', 'Sam', 'Priya'].map((n) => (
-              <Link key={n} href={`/tasks?name=${n}`} target="_blank" className="hv-btn hv-btn--paper">
+            {['Ana', 'Ben', 'Cal'].map((n) => (
+              <Link key={n} href={`/projects?name=${n}`} target="_blank" className="hv-btn hv-btn--paper">
                 <Avatar name={n} size={26} /> Open as {n}
               </Link>
             ))}
@@ -165,6 +160,7 @@ export default function Landing() {
       <footer className="hv-land__foot">
         <span>Hive · humans and agents, one graph</span>
         <nav aria-label="App pages">
+          <Link href="/projects">Projects</Link>
           <Link href="/overview">Overview</Link>
           <Link href="/tasks">Tasks</Link>
           <Link href="/architecture">Architecture</Link>
@@ -176,20 +172,27 @@ export default function Landing() {
 }
 
 const STEPS: { icon: IconName; title: string; text: string }[] = [
-  { icon: 'send', title: 'Say what you want', text: 'Type a request in chat, like “Build a URL shortener API with tests.” Mention a task with @ to point at it.' },
-  { icon: 'bot', title: 'The Planner draws the graph', text: 'Tasks with a spec, acceptance tests, files and dependencies appear on a canvas every collaborator can edit live.' },
-  { icon: 'bolt', title: 'Builders run in order', text: 'Builder agents pick up tasks whose dependencies are done, two at a time, each on its own git branch.' },
-  { icon: 'pencil', title: 'Change your mind anytime', text: 'Edit a spec mid-build and only that task goes stale and rebuilds. Hive asks why and logs the answer.' },
-  { icon: 'branch', title: 'Conflicts get resolved', text: 'Overlapping changes open a conflict card. An AI merge is applied if the tests pass, otherwise a human picks.' },
-  { icon: 'push', title: 'Approve and push', text: 'When everything is green on main, one click pushes it to your connected GitHub repo.' },
+  { icon: 'plus', title: 'Start a project', text: 'Name it and describe the goal. Hive drafts a stack and spec doc for you to review, and creates a private GitHub repo.' },
+  { icon: 'bot', title: 'Chat a task graph', text: 'Tell the Planner what to build. Tasks with specs and dependencies appear on a canvas everyone edits live.' },
+  { icon: 'bolt', title: 'Agents run ready tasks', text: 'Each ready task gets its own agent, git worktree and branch. Steps stream to every screen as they happen.' },
+  { icon: 'send', title: 'Steer anytime', text: 'Type into any agent’s session, like “count unique visitors, not hits.” It acknowledges at its next step.' },
+  { icon: 'users', title: 'Take over or hand off', text: 'Grab a task, edit files as yourself, then hand it back to the agent or reassign it to a teammate.' },
+  { icon: 'push', title: 'Approve and push', text: 'Tests run on main. When they pass, one click pushes it to GitHub.' },
+];
+
+const PROJECT_FEATURES: { icon: IconName; title: string; text: string }[] = [
+  { icon: 'sparkle', title: 'AI stack doc', text: 'Before you create a project, Hive drafts its stack and spec. Edit it; the Planner and every agent read it.' },
+  { icon: 'github', title: 'Private GitHub repo', text: 'Each new project gets its own repo. Approve pushes main there from your GitHub account.' },
+  { icon: 'users', title: 'Share by username', text: 'Add teammates by their GitHub login. They see the project, its graph and every session.' },
+  { icon: 'lock', title: 'Yours by default', text: 'You only see your projects and the ones shared with you. Rename, reshare or delete anytime.' },
 ];
 
 const FLOW: { kind: string; title: string; text: string; tone?: string }[] = [
-  { kind: 'Browser', title: 'Next.js app', text: 'Graph, chat, task panel. Writes only tasks.' },
-  { kind: 'Sync', title: 'Yjs + Hocuspocus', text: 'One shared doc over WebSocket.', tone: 'hot' },
-  { kind: 'Server', title: 'Orchestrator', text: 'Versions, staleness, runs, conflicts, log.', tone: 'ink' },
-  { kind: 'Agents', title: 'Claude', text: 'Planner, Builder, Merge and Ask, each output validated.', tone: 'blue' },
-  { kind: 'Output', title: 'Git + tests', text: 'A branch per task, merged when tests pass.', tone: 'green' },
+  { kind: 'Browser', title: 'Next.js app', text: 'Graph, chat, sessions. Writes only tasks.' },
+  { kind: 'Sync', title: 'Yjs + Hocuspocus', text: 'One live doc per project over WebSocket.', tone: 'hot' },
+  { kind: 'Server', title: 'Sessions', text: 'Scheduler, steer, takeover, handback, handoff.', tone: 'ink' },
+  { kind: 'Agents', title: 'LLM loop', text: 'Plan, read, edit, test, finish. One action per step.', tone: 'blue' },
+  { kind: 'Output', title: 'Git + tests', text: 'A worktree per task, merged to main, pushed to GitHub.', tone: 'green' },
 ];
 
 function SectionHead({ kicker, title }: { kicker: string; title: string }) {
@@ -201,10 +204,11 @@ function SectionHead({ kicker, title }: { kicker: string; title: string }) {
   );
 }
 
-function Feature({ title, text, children }: { title: string; text: string; children: React.ReactNode }) {
+function Demo({ n, title, text, flip = false, children }: { n: string; title: string; text: string; flip?: boolean; children: React.ReactNode }) {
   return (
-    <article className="hv-card hv-land__feature">
-      <div>
+    <article className={`hv-land__demorow${flip ? ' is-flip' : ''}`}>
+      <div className="hv-land__demotext">
+        <span className="hv-land__demonum">{n}</span>
         <h3>{title}</h3>
         <p>{text}</p>
       </div>

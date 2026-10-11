@@ -31,7 +31,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       <div className="hv-empty__card">
         <h1>Sign in to <span className="hv-wordbox hv-wordbox--xl">Hive</span></h1>
         <p>Your GitHub account is your name here: steps, chat and commits use it, and Approve pushes as you.</p>
-        <button className="hv-btn hv-btn--hot hv-btn--lg" onClick={signIn}>Sign in with GitHub <Icon name="arrow" /></button>
+        <button className="hv-btn hv-btn--hot hv-btn--lg" onClick={() => signIn()}>Sign in with GitHub <Icon name="arrow" /></button>
       </div>
     </div>
   );
