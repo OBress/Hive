@@ -14,7 +14,6 @@ export interface HiveState {
   chat: ChatMessage[];
   conflicts: Record<string, Conflict>;
   decisions: Decision[];
-  peerOpen: Record<string, string | undefined>;   // stand-in for awareness: name -> open task
   thinking: boolean;
   pushing: boolean;
   pushedUrl?: string;
@@ -22,7 +21,6 @@ export interface HiveState {
   toast?: { text: string; at: number };
 }
 
-export const PEOPLE = ['Ana', 'Ben', 'Cal'];
 export const DEMO_REQUEST = 'Build a URL shortener API: create, redirect, stats, with tests.';
 
 const PLAN: Task[] = [
@@ -50,7 +48,7 @@ const PLAN: Task[] = [
 
 let state: HiveState = {
   tasks: {}, runs: {}, chat: [], conflicts: {}, decisions: [],
-  peerOpen: {}, thinking: false, pushing: false,
+  thinking: false, pushing: false,
 };
 const listeners = new Set<() => void>();
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
@@ -284,11 +282,12 @@ export function resolveConflict(id: string, choice: 'ours' | 'theirs' | 'proposa
   completeMerge(c.taskB, state.runs[c.taskB]?.commit ?? sha(), `${by} picked ${choice}`);
 }
 
-export function push(by: string) {
+export function push(by: string, repo: string | null) {
+  if (!repo) return toast('Connect a GitHub repo on the Overview page first.');
   set(() => ({ pushing: true }));
   setTimeout(() => {
     const c = sha();
-    set(() => ({ pushing: false, pushedUrl: `https://github.com/hive-demo/url-shortener/commit/${c}` }));
+    set(() => ({ pushing: false, pushedUrl: `https://github.com/${repo}/commit/${c}` }));
     log({ who: by, kind: 'push', summary: 'Tests pass on main · pushed to GitHub', commit: c });
     say('builder', `Full suite passes on main. Pushed ${c} to GitHub.`);
   }, 2000);
@@ -330,7 +329,6 @@ function createPlan(by: string) {
       ],
       cites: [did],
     });
-    set(() => ({ peerOpen: { Ben: 'readme', Cal: undefined } }));
   }, PLAN.length * 180 + 100);
 }
 

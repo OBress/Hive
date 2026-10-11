@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { PEOPLE, runReady, updateTask, useHive } from '@/lib/mock';
+import { usePeers } from '@/lib/hive';
+import { runReady, updateTask, useHive } from '@/lib/mock';
 import type { Task, TaskRun } from '@/lib/types';
 import { displayStatus, StatusSticker } from './Status';
 import { Avatar, Icon, tilt } from './ui';
@@ -32,6 +33,9 @@ function Body({ task, run, me, onClose }: { task: Task; run?: TaskRun; me: strin
   const [why, setWhy] = useState('');
   const [newFile, setNewFile] = useState('');
   const status = displayStatus(task, run);
+  const peers = usePeers();
+  // Assignable: the agent, this person, everyone connected, and whoever holds it now.
+  const assignees = [...new Set(['agent', me, ...peers.map((p) => p.name), task.assignee])].filter((n) => n && n !== 'Guest');
 
   // Follow remote edits unless this person is mid-edit.
   useEffect(() => {
@@ -138,7 +142,7 @@ function Body({ task, run, me, onClose }: { task: Task; run?: TaskRun; me: strin
       <section className="hv-field">
         <span className="hv-label">Assignee</span>
         <div className="hv-seg" role="radiogroup">
-          {['agent', ...PEOPLE].map((n) => (
+          {assignees.map((n) => (
             <button key={n} role="radio" aria-checked={task.assignee === n}
               className={`hv-seg__opt${task.assignee === n ? ' is-on' : ''}`}
               onClick={() => updateTask(task.id, { assignee: n }, me)}>

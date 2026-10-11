@@ -22,7 +22,7 @@ export default function TasksPage() {
   return (
     <ReactFlowProvider>
       <div className="hv-app">
-        <TopBar me={me}><ShipBar me={me} /></TopBar>
+        <TopBar me={me} openTaskId={selected}><ShipBar me={me} /></TopBar>
         <main className="hv-main">
           <section className="hv-stage">
             <Graph me={me} selected={selected} onSelect={setSelected} />

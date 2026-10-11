@@ -4,11 +4,10 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import TopBar from '@/components/TopBar';
 import { Avatar, Icon, tilt } from '@/components/ui';
-import { useUserName } from '@/lib/hive';
+import { usePeers, useUserName } from '@/lib/hive';
 import { useHive } from '@/lib/mock';
-import {
-  activityOn, connectRepo, PAST_PEOPLE, PEOPLE_INFO, PROJECT, SEED_COMMITS, STACK, timeAgo, useRepo, type Commit,
-} from '@/lib/project';
+import type { Decision } from '@/lib/types';
+import { connectRepo, PROJECT, STACK, timeAgo, useRepo, type Commit } from '@/lib/project';
 
 const BASE_NOW = Date.UTC(2026, 9, 11, 12, 0, 0);
 
@@ -39,7 +38,7 @@ export default function Overview() {
       branch: d.kind === 'push' ? 'origin/main' : d.taskId ? `task/${d.taskId}` : 'main',
     }))
     .reverse();
-  const commits = [...liveCommits, ...SEED_COMMITS];
+  const commits = liveCommits;
   const testsPassing = done.reduce((n, t) => n + t.acceptance.length, 0);
   const agentRuns = s.decisions.filter((d) => d.kind === 'agent-result' || d.kind === 'merge').length;
 
@@ -55,13 +54,12 @@ export default function Overview() {
             <h1>Ship a <span className="hv-wordbox hv-wordbox--xl">URL shortener</span> together</h1>
             <p>{PROJECT.goal}</p>
             <div className="hv-ov__goalmeta">
-              <span><Icon name="bolt" size={14} /> Day {PROJECT.started + 1}</span>
               <span>{PROJECT.deadline}</span>
             </div>
           </section>
 
           <section className="hv-ov__stats">
-            <Stat label="Tasks done" value={`${done.length}/${tasks.length || 5}`} tone="green" id="s1" />
+            <Stat label="Tasks done" value={`${done.length}/${tasks.length}`} tone="green" id="s1" />
             <Stat label="Commits" value={String(commits.length)} tone="blue" id="s2" />
             <Stat label="Tests passing" value={String(testsPassing)} tone="hot" id="s3" />
             <Stat label="Agent runs" value={String(agentRuns)} tone="ink" id="s4" />
@@ -71,10 +69,10 @@ export default function Overview() {
 
           <aside className="hv-ov__side">
             <AgentsNow />
-            <People />
+            <People me={me} decisions={s.decisions} now={now} />
           </aside>
 
-          <Calendar now={now} todayCount={s.decisions.length} />
+          <Calendar now={now} decisions={s.decisions} />
           <Stack />
           <Checkpoints />
           <RecentDecisions q={q} />
@@ -95,13 +93,9 @@ function Stat({ label, value, tone, id }: { label: string; value: string; tone: 
 
 function GitHistory({ commits, now, pushed }: { commits: Commit[]; now: number; pushed?: string }) {
   const repo = useRepo();
-  const [draft, setDraft] = useState('hive-demo/url-shortener');
-  const [connecting, setConnecting] = useState(false);
-  const connect = () => {
-    if (!draft.trim()) return;
-    setConnecting(true);
-    setTimeout(() => { connectRepo(draft.trim()); setConnecting(false); }, 900);
-  };
+  const [draft, setDraft] = useState('');
+  const valid = /^[\w.-]+\/[\w.-]+$/.test(draft.trim());
+  const connect = () => { if (valid) connectRepo(draft.trim()); };
 
   return (
     <section className="hv-ov__git hv-card">
@@ -124,15 +118,16 @@ function GitHistory({ commits, now, pushed }: { commits: Commit[]; now: number; 
             <p>Agents commit locally on one branch per task. Connect a repo so “Approve &amp; push” has somewhere to go.</p>
           </div>
           <div className="hv-connect__row">
-            <input className="hv-input" value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="owner/repo"
+            <input className="hv-input" value={draft} placeholder="owner/repo" onChange={(e) => setDraft(e.target.value)} aria-label="owner/repo"
               onKeyDown={(e) => { if (e.key === 'Enter') connect(); }} />
-            <button className="hv-btn hv-btn--hot hv-btn--sm" onClick={connect} disabled={connecting}>
-              {connecting ? <><i className="hv-spinner" /> Connecting…</> : <>Connect <Icon name="arrow" size={14} /></>}
+            <button className="hv-btn hv-btn--hot hv-btn--sm" onClick={connect} disabled={!valid}>
+              Connect <Icon name="arrow" size={14} />
             </button>
           </div>
         </div>
       )}
 
+      {!commits.length && <p className="hv-ov__empty">No commits yet. Agent commits show up here as tasks finish.</p>}
       <ol className="hv-commits">
         {commits.slice(0, 9).map((c, i) => (
           <li key={`${c.sha}-${i}`} className="hv-commit">
@@ -188,27 +183,55 @@ function AgentState({ busy }: { busy: boolean }) {
   );
 }
 
-function People() {
+interface Contributor { name: string; online: boolean; actions: number; last?: number; openTaskId?: string }
+
+// Online = connected right now (Hocuspocus awareness). Past = appear in the decision log but aren't connected.
+function People({ me, decisions, now }: { me: string; decisions: Decision[]; now: number }) {
+  const s = useHive();
+  const peers = usePeers();
+  const byName = new Map<string, Contributor>();
+  const get = (name: string) => byName.get(name) ?? byName.set(name, { name, online: false, actions: 0 }).get(name)!;
+  if (me !== 'Guest') get(me).online = true;
+  for (const p of peers) Object.assign(get(p.name), { online: true, openTaskId: p.openTaskId });
+  for (const d of decisions) {
+    if (d.who === 'planner' || d.who === 'builder') continue;
+    const c = get(d.who);
+    c.actions++;
+    c.last = Math.max(c.last ?? 0, Date.parse(d.at));
+  }
+  const all = [...byName.values()];
+  const online = all.filter((c) => c.online).sort((a, b) => (a.name === me ? -1 : b.name === me ? 1 : a.name.localeCompare(b.name)));
+  const past = all.filter((c) => !c.online).sort((a, b) => (b.last ?? 0) - (a.last ?? 0));
+
   return (
     <section className="hv-card hv-ov__people">
-      <header className="hv-ov__head"><h2>Collaborators</h2><span className="hv-sticker hv-sticker--green">{PEOPLE_INFO.length} online</span></header>
-      <ul className="hv-people">
-        {PEOPLE_INFO.map((p) => <PersonRow key={p.name} p={p} />)}
-      </ul>
-      <span className="hv-label">Past collaborators</span>
-      <ul className="hv-people is-past">
-        {PAST_PEOPLE.map((p) => <PersonRow key={p.name} p={p} />)}
-      </ul>
+      <header className="hv-ov__head"><h2>Collaborators</h2><span className="hv-sticker hv-sticker--green">{online.length} online</span></header>
+      {online.length ? (
+        <ul className="hv-people">
+          {online.map((c) => (
+            <PersonRow key={c.name} c={c} me={me} now={now}
+              detail={c.openTaskId ? `Viewing ${s.tasks[c.openTaskId]?.title ?? c.openTaskId}` : c.name === me ? 'You' : 'Online'} />
+          ))}
+        </ul>
+      ) : <p className="hv-ov__empty">Open this page with ?name=YourName to show up here.</p>}
+      {past.length > 0 && (
+        <>
+          <span className="hv-label">Past collaborators</span>
+          <ul className="hv-people is-past">
+            {past.map((c) => <PersonRow key={c.name} c={c} me={me} now={now} detail="Not connected" />)}
+          </ul>
+        </>
+      )}
     </section>
   );
 }
 
-function PersonRow({ p }: { p: (typeof PEOPLE_INFO)[number] }) {
+function PersonRow({ c, me, now, detail }: { c: Contributor; me: string; now: number; detail: string }) {
   return (
     <li>
-      <span className="hv-people__av"><Avatar name={p.name} size={34} />{p.online && <i />}</span>
-      <div><b>{p.name}</b><span>{p.role}</span></div>
-      <div className="hv-people__num"><b>{p.commits}</b><span>{p.lastActive}</span></div>
+      <span className="hv-people__av"><Avatar name={c.name} size={34} />{c.online && <i />}</span>
+      <div><b>{c.name}{c.name === me ? ' (you)' : ''}</b><span>{detail}</span></div>
+      <div className="hv-people__num"><b>{c.actions}</b><span>{c.last ? timeAgo(c.last, now) : 'decisions'}</span></div>
     </li>
   );
 }
@@ -216,40 +239,38 @@ function PersonRow({ p }: { p: (typeof PEOPLE_INFO)[number] }) {
 const WEEKS = 24;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-function Calendar({ now, todayCount }: { now: number; todayCount: number }) {
+const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+const levelFor = (n: number) => (n === 0 ? 0 : n <= 2 ? 1 : n <= 5 ? 2 : n <= 10 ? 3 : 4);
+
+// Activity per day = decisions logged that day (spec changes, graph edits, agent results, merges, pushes).
+function Calendar({ now, decisions }: { now: number; decisions: Decision[] }) {
   const { cols, worked, streak } = useMemo(() => {
+    const perDay = new Map<string, number>();
+    for (const d of decisions) { const k = dayKey(new Date(d.at)); perDay.set(k, (perDay.get(k) ?? 0) + 1); }
     const today = new Date(now);
     today.setHours(0, 0, 0, 0);
     const end = new Date(today);
     end.setDate(end.getDate() + (6 - end.getDay()));        // finish the current week
     const cols: { key: string; level: number; label: string; isToday: boolean; future: boolean; month?: string }[][] = [];
-    let worked = 0;
     for (let w = WEEKS - 1; w >= 0; w--) {
       const col = [];
       for (let d = 0; d < 7; d++) {
         const day = new Date(end);
         day.setDate(end.getDate() - w * 7 - (6 - d));
+        const key = dayKey(day);
         const daysAgo = Math.round((today.getTime() - day.getTime()) / 86_400_000);
-        const key = day.toISOString().slice(0, 10);
-        const isToday = daysAgo === 0;
+        const n = perDay.get(key) ?? 0;
         const future = daysAgo < 0;
-        let level = future ? 0 : activityOn(key, daysAgo);
-        if (isToday) level = Math.max(level, Math.min(4, 1 + Math.floor(todayCount / 4)));
-        if (level > 0) worked++;
-        col.push({ key, level, isToday, future, label: `${day.toDateString()}${future ? '' : ` · ${level ? `${level * 3} edits` : 'no activity'}`}`,
+        col.push({ key, level: levelFor(n), isToday: daysAgo === 0, future,
+          label: `${day.toDateString()}${future ? '' : ` · ${n} ${n === 1 ? 'decision' : 'decisions'}`}`,
           month: day.getDate() <= 7 && d === 0 ? MONTHS[day.getMonth()] : undefined });
       }
       cols.push(col);
     }
     let streak = 0;
-    for (let i = 0; i < 60; i++) {
-      const day = new Date(today); day.setDate(today.getDate() - i);
-      const lvl = i === 0 ? 1 : activityOn(day.toISOString().slice(0, 10), i);
-      if (!lvl) break;
-      streak++;
-    }
-    return { cols, worked, streak };
-  }, [now, todayCount]);
+    for (const day = new Date(today); perDay.get(dayKey(day)); day.setDate(day.getDate() - 1)) streak++;
+    return { cols, worked: perDay.size, streak };
+  }, [now, decisions]);
 
   return (
     <section className="hv-card hv-ov__cal">

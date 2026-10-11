@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
-import { PEOPLE, useHive } from '@/lib/mock';
+import { useAnnounce, usePeers, useStatus } from '@/lib/hive';
+import { useHive } from '@/lib/mock';
 import { Avatar } from './ui';
 
 const TABS = [
@@ -13,11 +14,13 @@ const TABS = [
 ];
 
 // Shared header for every page: logo, page tabs, presence, and page-specific actions on the right.
-export default function TopBar({ me, children }: { me: string; children?: ReactNode }) {
+export default function TopBar({ me, openTaskId, children }: { me: string; openTaskId?: string | null; children?: ReactNode }) {
   const s = useHive();
   const path = usePathname();
   const building = Object.values(s.runs).some((r) => r.status === 'running');
-  const peers = PEOPLE.filter((p) => p !== me).slice(0, 2);
+  const peers = usePeers().filter((p) => p.name !== me);
+  const connected = useStatus() === 'connected';
+  useAnnounce(me, openTaskId);
   const q = me && me !== 'Guest' ? `?name=${encodeURIComponent(me)}` : '';
   const active = Math.max(0, TABS.findIndex((t) => t.href === path));
 
@@ -40,7 +43,7 @@ export default function TopBar({ me, children }: { me: string; children?: ReactN
           </Link>
         ))}
       </nav>
-      <span className="hv-live"><i /> Live</span>
+      <span className={`hv-live${connected ? '' : ' is-off'}`}><i /> {connected ? 'Live' : 'Offline'}</span>
 
       <div className="hv-top__spacer" />
 
@@ -48,7 +51,7 @@ export default function TopBar({ me, children }: { me: string; children?: ReactN
         <Avatar name="planner" agent busy={s.thinking} size={36} />
         <Avatar name="builder" agent busy={building} size={36} />
         <span className="hv-presence__gap" />
-        {peers.map((p) => <Avatar key={p} name={p} size={36} />)}
+        {peers.map((p) => <Avatar key={p.name} name={p.name} size={36} />)}
         <span className="hv-presence__me"><Avatar name={me} size={36} /><em>you</em></span>
       </div>
 

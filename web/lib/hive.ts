@@ -40,10 +40,44 @@ export function useYMap<T>(key: string): Record<string, T> {
   return value;
 }
 
+// ---- presence (Hocuspocus awareness) ---------------------------------------
+
+export interface Peer { clientId: number; name: string; openTaskId?: string }
+
+// Everyone else connected to the doc, one entry per name (several tabs collapse into one).
+export function usePeers(): Peer[] {
+  const [peers, setPeers] = useState<Peer[]>([]);
+  useEffect(() => {
+    const aw = getProvider().awareness;
+    if (!aw) return;
+    const update = () => {
+      const byName = new Map<string, Peer>();
+      aw.getStates().forEach((st, clientId) => {
+        const u = st.user as { name?: string; openTaskId?: string } | undefined;
+        if (clientId === aw.clientID || !u?.name || u.name === 'Guest') return;
+        byName.set(u.name, { clientId, name: u.name, openTaskId: u.openTaskId });
+      });
+      setPeers([...byName.values()].sort((a, b) => a.name.localeCompare(b.name)));
+    };
+    update();
+    aw.on('change', update);
+    return () => aw.off('change', update);
+  }, []);
+  return peers;
+}
+
+// Tell others who this tab is and which task it has open.
+export function useAnnounce(name: string, openTaskId?: string | null) {
+  useEffect(() => {
+    getProvider().setAwarenessField('user', { name, openTaskId: openTaskId ?? undefined });
+  }, [name, openTaskId]);
+}
+
 export function useStatus(): string {
   const [status, setStatus] = useState('connecting');
   useEffect(() => {
     const p = getProvider();
+    setStatus(p.configuration.websocketProvider.status);   // already connected when switching pages
     const onStatus = ({ status }: { status: string }) => setStatus(status);
     p.on('status', onStatus);
     return () => { p.off('status', onStatus); };

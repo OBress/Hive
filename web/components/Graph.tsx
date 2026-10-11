@@ -6,6 +6,7 @@ import {
   type Connection, type Edge, type EdgeChange, type NodeChange,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { usePeers } from '@/lib/hive';
 import { addEdge, moveTask, removeEdge, useHive } from '@/lib/mock';
 import TaskNode, { type TaskNodeType } from './TaskNode';
 
@@ -17,13 +18,14 @@ export default function Graph({ me, selected, onSelect }: { me: string; selected
   const [nodes, setNodes] = useState<TaskNodeType[]>([]);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
 
-  // Who has each task open: the local user plus peers (awareness later).
+  // Who has each task open: this tab plus everyone connected (Hocuspocus awareness).
+  const peers = usePeers();
   const viewers = useMemo(() => {
     const out: Record<string, string[]> = {};
-    const open = { ...s.peerOpen, [me]: selected ?? undefined };
-    for (const [name, id] of Object.entries(open)) if (id) (out[id] ??= []).push(name);
+    const open: [string, string | undefined][] = [[me, selected ?? undefined], ...peers.map((p): [string, string | undefined] => [p.name, p.openTaskId])];
+    for (const [name, id] of open) if (id) (out[id] ??= []).push(name);
     return out;
-  }, [s.peerOpen, me, selected]);
+  }, [peers, me, selected]);
 
   // Tasks map -> React Flow nodes, keeping React Flow's own measurements and drag state.
   useEffect(() => {

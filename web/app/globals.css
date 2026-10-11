@@ -63,6 +63,8 @@ pre, code { font-family: var(--mono); }
   font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
 }
 .hv-live i { width: 10px; height: 10px; border-radius: 50%; background: var(--green); border: 2px solid var(--ink); position: relative; }
+.hv-live.is-off i { background: var(--red); }
+.hv-live.is-off i::after { display: none; }
 .hv-live i::after { content: ''; position: absolute; inset: -2px; border-radius: 50%; background: var(--green); animation: hv-ping 1.6s var(--ease) infinite; }
 
 .hv-presence { display: flex; align-items: center; }
