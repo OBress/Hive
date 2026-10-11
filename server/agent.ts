@@ -27,8 +27,14 @@ How to do the task:
 - When a teammate's message appears, your next reply's PLAN line starts with "Got it:" and says what you are changing, like "PLAN: Got it: counting unique visitors; rewriting src/stats.js." Do this once per message, not on every later reply.
 - Keep files small and readable. Never print secrets.`;
 
+// Added to the system prompt when an OpenCode server is connected.
+export const SEARCH_HELP = `
+
+One more action is available: <search pattern="createStore"/> searches every file under src/ and test/ for a regular expression and returns the matching lines with their file and line number. Use it to find where something is defined or used before you read whole files.`;
+
 export type Action =
   | { type: 'read'; path: string }
+  | { type: 'search'; pattern: string }
   | { type: 'write'; path: string; content: string }
   | { type: 'test' }
   | { type: 'finish'; summary: string };
@@ -37,10 +43,11 @@ export function parseAction(raw: string): { plan: string; action?: Action; error
   const text = raw.replace(/<think>[\s\S]*?<\/think>/g, '');
   // The PLAN line, or failing that the first line of prose before any action (models sometimes drop the label).
   const labeled = /^[\s*#]*PLAN\**:\**\s*(.+)$/im.exec(text)?.[1];
-  const prose = text.split(/<(?:read|write|test|finish)\b/)[0].split('\n').map((l) => l.trim()).find(Boolean);
+  const prose = text.split(/<(?:read|search|write|test|finish)\b/)[0].split('\n').map((l) => l.trim()).find(Boolean);
   const plan = (labeled ?? prose ?? '').replace(/\*+$/, '').trim().slice(0, 300);
   const found = [
     { re: /<read\s+path="([^"]*)"\s*\/>/, make: (m: RegExpExecArray) => ({ type: 'read', path: m[1] }) },
+    { re: /<search\s+pattern="([^"]+)"\s*\/>/, make: (m: RegExpExecArray) => ({ type: 'search', pattern: m[1] }) },
     { re: /<write\s+path="([^"]*)"\s*>([\s\S]*?)<\/write>/, make: (m: RegExpExecArray) => ({ type: 'write', path: m[1], content: unfence(m[2]) }) },
     { re: /<test\s*\/>/, make: () => ({ type: 'test' }) },
     { re: /<finish>([\s\S]*?)<\/finish>/, make: (m: RegExpExecArray) => ({ type: 'finish', summary: m[1].trim() }) },

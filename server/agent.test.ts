@@ -11,6 +11,7 @@ test('takes the earliest action', () => {
   expect(parseAction('PLAN: x\n<test/>\n<finish>done</finish>').action).toEqual({ type: 'test' });
   expect(parseAction('PLAN: x\n<read path="src/a.js"/>').action).toEqual({ type: 'read', path: 'src/a.js' });
   expect(parseAction('PLAN: x\n<finish>All good.</finish>').action).toEqual({ type: 'finish', summary: 'All good.' });
+  expect(parseAction('PLAN: x\n<search pattern="createStore"/>').action).toEqual({ type: 'search', pattern: 'createStore' });
 });
 
 test('accepts a bold or lowercase PLAN line', () => {

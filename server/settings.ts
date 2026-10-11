@@ -33,6 +33,7 @@ const repoName = () => /github\.com\/([\w.-]+\/[\w.-]+?)(\.git)?$/.exec(pushRemo
 export const ENV_NAMES = [
   'LLM_PROVIDER', 'LLM_API_KEY', 'LLM_BASE_URL', 'AGENT_MODEL', 'PLANNER_MODEL', 'ANTHROPIC_API_KEY',
   'MAX_PARALLEL', 'MAX_STEPS', 'GITHUB_REMOTE', 'GITHUB_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'MONGODB_URI', 'PORT',
+  'DAYTONA_API_KEY', 'DAYTONA_API_URL', 'DAYTONA_TARGET', 'OPENCODE_URL',
 ];
 const LIVE = new Set(['GITHUB_REMOTE', 'GITHUB_TOKEN']);   // read per request; the rest need a restart
 

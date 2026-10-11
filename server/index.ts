@@ -10,6 +10,7 @@ import { initModels } from './llm.ts';
 import { initMongo } from './mongo.ts';
 import { DATA_DIR, DOC_FILE } from './paths.ts';
 import { errorHandler, routes } from './routes.ts';
+import { disposeSandbox, warmSandbox } from './sandbox.ts';
 import { getEpoch, initEpoch, settings } from './settings.ts';
 import { recover, watchTasks } from './session.ts';
 import { ensureWorkspace } from './workspace.ts';
@@ -78,13 +79,14 @@ doc = direct.document!;
 setDoc(doc);
 recover();
 watchTasks();
+warmSandbox();
 saver = setInterval(save, 2000);
 // Save once and exit on Ctrl+C / kill, so no orphan keeps writing an old doc to data/doc.bin.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     clearInterval(saver);
     if (doc) save();
-    process.exit(0);
+    void disposeSandbox().finally(() => process.exit(0));
   });
 }
 

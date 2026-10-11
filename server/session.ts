@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Owner, TaskSpec, TaskState } from '@hive/shared/types';
-import { AGENT_SYSTEM, buildMessages, contextText, isTestFile, parseAction, type Action } from './agent.ts';
+import { AGENT_SYSTEM, SEARCH_HELP, buildMessages, contextText, isTestFile, parseAction, type Action } from './agent.ts';
 import {
   addStep, HttpError, live, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks, trim,
 } from './doc.ts';
@@ -9,6 +9,7 @@ import { AGENT, personAuthor, type GitUser } from './git.ts';
 import { readyTasks } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
 import { saveTranscript } from './mongo.ts';
+import { openCodeOn, search } from './opencode.ts';
 import { SESSIONS_DIR } from './paths.ts';
 import { summarize } from './planner.ts';
 import { runTests } from './runner.ts';
@@ -169,7 +170,7 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
   let reply: string;
   try {
     reply = await generate({
-      model: models.agent, system: AGENT_SYSTEM, messages, signal: ctrl.signal,
+      model: models.agent, system: AGENT_SYSTEM + (openCodeOn() ? SEARCH_HELP : ''), messages, signal: ctrl.signal,
       onToken: (d) => {
         text += d;
         if (Date.now() - last >= 150) flush();
@@ -225,6 +226,11 @@ async function act(s: SessionData, t: TaskSpec, dir: string, a: Action) {
     const content = readFile(dir, a.path);
     s.pending.push(content === null ? `${a.path} does not exist. ${filesNow(dir)}` : `Contents of ${a.path}:\n${trim(content, 12000)}`);
     addStep({ ...ref(s), kind: 'read', text: `Read ${a.path}`, path: a.path });
+  } else if (a.type === 'search') {
+    const found = openCodeOn() ? await search(dir, a.pattern).catch(() => null) : null;
+    s.pending.push(found === null ? 'Search is not available; use <read/> instead.'
+      : `Search for "${a.pattern}": ${found.map((m) => `\n${m.path}:${m.line}: ${m.text}`).join('') || 'no matches.'}`);
+    addStep({ ...ref(s), kind: 'read', text: `Searched for "${a.pattern}"${found ? `: ${found.length} match${found.length === 1 ? '' : 'es'}` : ' (search unavailable)'}` });
   } else if (a.type === 'write') {
     writeFile(dir, a.path, a.content);
     const commit = await commitAll(dir, AGENT, `${t.title}: write ${a.path}`);
@@ -233,8 +239,8 @@ async function act(s: SessionData, t: TaskSpec, dir: string, a: Action) {
     s.testOk = false;
     s.pending.push(`${commit ? `Wrote ${a.path} (commit ${commit}).` : `${a.path} is unchanged.`} ${filesNow(dir)}`);
   } else if (a.type === 'test') {
-    const r = await runTests(dir);
-    addStep({ ...ref(s), kind: 'test', text: `Tests: ${r.passed} passed, ${r.failed} failed`, test: r });
+    const { sandbox, ...r } = await runTests(dir);
+    addStep({ ...ref(s), kind: 'test', text: `Tests: ${r.passed} passed, ${r.failed} failed${sandbox ? ' (in sandbox)' : ''}`, test: r });
     setTaskState(t.id, { lastTest: { passed: r.passed, failed: r.failed } });
     s.testOk = r.failed === 0 && r.passed > 0;
     const ran = listFiles(dir).filter(isTestFile);
