@@ -19,6 +19,7 @@ export interface TaskRun {
   builtFromVersion: number;
   branch: string;
   commit?: string; diff?: string; testOutput?: string; note: string;
+  step?: number;              // PROPOSED (not in SPEC yet): index into runSteps(task) while running
 }
 
 export type GraphOp =

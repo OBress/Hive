@@ -7,12 +7,15 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { usePeers } from '@/lib/hive';
+import { taskMatches } from '@/lib/mentions';
 import { addEdge, moveTask, removeEdge, useHive } from '@/lib/mock';
 import TaskNode, { type TaskNodeType } from './TaskNode';
 
 const nodeTypes = { task: TaskNode };
 
-export default function Graph({ me, selected, onSelect }: { me: string; selected: string | null; onSelect: (id: string | null) => void }) {
+export default function Graph({ me, selected, onSelect, query, showDone }: {
+  me: string; selected: string | null; onSelect: (id: string | null) => void; query: string; showDone: boolean;
+}) {
   const s = useHive();
   const rf = useReactFlow();
   const [nodes, setNodes] = useState<TaskNodeType[]>([]);
@@ -27,25 +30,30 @@ export default function Graph({ me, selected, onSelect }: { me: string; selected
     return out;
   }, [peers, me, selected]);
 
+  // Completed tasks can be hidden; the open one always stays visible.
+  const visible = useCallback((id: string) => showDone || s.runs[id]?.status !== 'done' || id === selected,
+    [showDone, s.runs, selected]);
+
   // Tasks map -> React Flow nodes, keeping React Flow's own measurements and drag state.
   useEffect(() => {
     setNodes((prev) => {
       const byId = new Map(prev.map((n) => [n.id, n]));
-      return Object.values(s.tasks).map((t) => {
+      return Object.values(s.tasks).filter((t) => visible(t.id)).map((t) => {
         const p = byId.get(t.id);
         return {
           ...p,
           id: t.id, type: 'task', deletable: false,
           position: p?.dragging ? p.position : { x: t.x, y: t.y },
           selected: t.id === selected,
+          className: query.trim() && !taskMatches(t, query) ? 'is-dim' : '',
           data: { task: t, run: s.runs[t.id], viewers: viewers[t.id] ?? [], flash: s.focus?.id === t.id ? s.focus.at : 0 },
         } as TaskNodeType;
       });
     });
-  }, [s.tasks, s.runs, s.focus, selected, viewers]);
+  }, [s.tasks, s.runs, s.focus, selected, viewers, query, visible]);
 
-  const edges = useMemo<Edge[]>(() => Object.values(s.tasks).flatMap((t) =>
-    t.dependsOn.filter((d) => s.tasks[d]).map((d) => {
+  const edges = useMemo<Edge[]>(() => Object.values(s.tasks).filter((t) => visible(t.id)).flatMap((t) =>
+    t.dependsOn.filter((d) => s.tasks[d] && visible(d)).map((d) => {
       const st = s.runs[t.id]?.status;
       const id = `${d}->${t.id}`;
       return {
@@ -55,7 +63,7 @@ export default function Graph({ me, selected, onSelect }: { me: string; selected
         className: st === 'stale' ? 'is-stale' : st === 'running' ? 'is-running' : '',
         markerEnd: { type: MarkerType.ArrowClosed, width: 6, height: 6, color: st === 'stale' ? '#ff5c1a' : st === 'running' ? '#2563eb' : '#14121a' },
       };
-    })), [s.tasks, s.runs, selectedEdge]);
+    })), [s.tasks, s.runs, selectedEdge, visible]);
 
   const onNodesChange = useCallback((changes: NodeChange<TaskNodeType>[]) => {
     setNodes((ns) => applyNodeChanges(changes, ns));
