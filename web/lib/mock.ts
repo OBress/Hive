@@ -12,6 +12,7 @@ import {
 } from '@hive/shared/types';
 import { authHeaders } from './auth';
 import { apiUrl, getProvider } from './hive';
+import { projectId } from './projects';
 import { runSteps } from './steps';
 import type { ChatMessage, Conflict, Decision, RunStatus, Task, TaskRun } from './types';
 
@@ -173,7 +174,7 @@ const fail = (e: unknown) => toast((e as Error).message);
 const title = (id: string) => state.tasks[id]?.title ?? id;
 
 async function api<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(apiUrl(`/api${path}`), {
+  const res = await fetch(apiUrl(`/api/projects/${projectId()}${path}`), {
     method, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
@@ -271,7 +272,7 @@ export function resolveConflict(_id: string, _choice: 'ours' | 'theirs' | 'propo
   toast('Merge conflicts are resolved by taking over the task.');
 }
 
-// Approve: the server runs the tests on main and pushes to the repo connected on Overview (else GITHUB_REMOTE).
+// Approve: the server runs the tests on main and pushes to the project's repo from Overview (else GITHUB_REMOTE).
 export async function push(by: string, _repo: string | null) {
   setLocal({ pushing: true });
   try {

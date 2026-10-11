@@ -1,16 +1,19 @@
 'use client';
 
-import type { ReactNode } from 'react';
-import { usePathname } from 'next/navigation';
+import { useEffect, type ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { signIn, useAuth } from '@/lib/auth';
+import { lastProject, projectId, rememberProject, useProjects } from '@/lib/projects';
 import { Icon } from './ui';
 
 // When the server has sign-in on, nothing renders until the person signs in with GitHub.
-// The landing page at "/" is public.
+// The landing page at "/" is public. Every page except "/" and "/projects" works on one project.
 export default function AuthGate({ children }: { children: ReactNode }) {
   const a = useAuth();
   const path = usePathname();
-  if (path === '/' || !a.auth || a.login) return <>{children}</>;
+  if (path === '/' || !a.auth || a.login) {
+    return path === '/' || path === '/projects' ? <>{children}</> : <ProjectGate>{children}</ProjectGate>;
+  }
   return (
     <div className="hv-empty">
       <div className="hv-empty__card">
@@ -20,4 +23,33 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
+}
+
+// Renders the page once ?project= names a real project. Without one it reopens the last project this
+// browser used, or sends the person to the project list.
+function ProjectGate({ children }: { children: ReactNode }) {
+  const { projects, error } = useProjects();
+  const router = useRouter();
+  const path = usePathname();
+  const id = projectId();
+  const ok = !!projects?.some((p) => p.id === id);
+
+  useEffect(() => {
+    if (!projects || ok) {
+      if (ok) rememberProject(id);
+      return;
+    }
+    const q = new URLSearchParams(window.location.search);
+    const last = lastProject();
+    if (!id && projects.some((p) => p.id === last)) {
+      q.set('project', last);
+      router.replace(`${path}?${q}`);
+    } else {
+      q.delete('project');
+      router.replace(`/projects${q.size ? `?${q}` : ''}`);
+    }
+  }, [projects, ok, id, path, router]);
+
+  if (error) return <div className="hv-projects__msg">{error}</div>;
+  return ok ? <>{children}</> : null;
 }

@@ -10,7 +10,7 @@ import { readyTasks } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
 import { saveTranscript } from './mongo.ts';
 import { openCodeOn, search } from './opencode.ts';
-import { SESSIONS_DIR } from './paths.ts';
+import { currentId, inProject, sessionsDir } from './projects.ts';
 import { summarize } from './planner.ts';
 import { runTests } from './runner.ts';
 import {
@@ -34,25 +34,27 @@ export interface SessionData {
   bad: number; errors: number;
 }
 
+// Keyed by project/session id; everything below runs inside one project (see projects.ts).
 const cache = new Map<string, SessionData>();
 const active = new Map<string, AbortController>();   // sessions with a running loop
 const rerun = new Set<string>();
-let autoRun = false;
+const autoRun = new Set<string>();                   // projects where Run ready was pressed
+const key = (sid: string) => `${currentId()}/${sid}`;
 
 function load(id: string | undefined): SessionData | null {
   if (!id) return null;
-  if (cache.has(id)) return cache.get(id)!;
-  const file = join(SESSIONS_DIR, `${id}.json`);
+  if (cache.has(key(id))) return cache.get(key(id))!;
+  const file = join(sessionsDir(), `${id}.json`);
   if (!existsSync(file)) return null;
   const s = JSON.parse(readFileSync(file, 'utf8')) as SessionData;
-  cache.set(id, s);
+  cache.set(key(id), s);
   return s;
 }
 
 function save(s: SessionData) {
-  cache.set(s.id, s);
-  mkdirSync(SESSIONS_DIR, { recursive: true });
-  writeFileSync(join(SESSIONS_DIR, `${s.id}.json`), JSON.stringify(s));
+  cache.set(key(s.id), s);
+  mkdirSync(sessionsDir(), { recursive: true });
+  writeFileSync(join(sessionsDir(), `${s.id}.json`), JSON.stringify(s));
   saveTranscript(s);
 }
 
@@ -102,12 +104,12 @@ export function startTask(taskId: string, by: string): Promise<string> {
 }
 
 export function run(): string[] {
-  autoRun = true;
+  autoRun.add(currentId());
   return schedule();
 }
 
 export function schedule(): string[] {
-  if (!autoRun) return [];
+  if (!autoRun.has(currentId())) return [];
   const states = taskState().toJSON() as Record<string, TaskState>;
   let running = Object.values(states).filter((s) => s.status === 'running').length;
   const started: string[] = [];
@@ -123,15 +125,15 @@ export function schedule(): string[] {
 // ---- The loop ----
 
 function resume(sid: string) {
-  const c = active.get(sid);
+  const c = active.get(key(sid));
   if (c && !c.signal.aborted) return;
-  if (c) rerun.add(sid);     // the old loop is winding down; start again when it exits
+  if (c) rerun.add(key(sid));     // the old loop is winding down; start again when it exits
   else void loop(sid);
 }
 
 async function loop(sid: string) {
   const ctrl = new AbortController();
-  active.set(sid, ctrl);
+  active.set(key(sid), ctrl);
   try {
     while (await turn(sid, ctrl));
   } catch (e) {
@@ -139,9 +141,9 @@ async function loop(sid: string) {
     const s = load(sid);
     if (s) fail(s, `Internal error: ${(e as Error).message}`);
   } finally {
-    active.delete(sid);
+    active.delete(key(sid));
     serverWrite(() => live().delete(sid));
-    if (rerun.delete(sid)) resume(sid);
+    if (rerun.delete(key(sid))) resume(sid);
   }
 }
 
@@ -302,7 +304,7 @@ export function specChanged(taskId: string, by: string, spec: string, why?: stri
 function removeTaskState(taskId: string) {
   const sid = taskState().get(taskId)?.sessionId;
   if (sid) {
-    active.get(sid)?.abort();
+    active.get(key(sid))?.abort();
     if (sessions().has(sid)) setSession(sid, { state: 'failed' });
   }
   serverWrite(() => taskState().delete(taskId));
@@ -310,23 +312,24 @@ function removeTaskState(taskId: string) {
 
 // React to browsers editing the graph.
 export function watchTasks() {
+  const project = currentId();   // websocket updates arrive outside any project context
   tasks().observe((ev, tr) => {
     if (tr.origin === 'server') return;
-    const changes = [...ev.changes.keys].map(([key, c]) => ({ key, action: c.action, old: c.oldValue as TaskSpec | undefined }));
-    setTimeout(() => {
-      for (const { key, action, old } of changes) {
-        const cur = tasks().get(key);
-        if (action === 'delete') removeTaskState(key);
-        else if (action === 'add' && !taskState().has(key)) setTaskState(key, {});
-        else if (action === 'update' && cur && old && old.spec !== cur.spec) specChanged(key, cur.editedBy || 'someone', cur.spec, cur.why);
+    const changes = [...ev.changes.keys].map(([id, c]) => ({ id, action: c.action, old: c.oldValue as TaskSpec | undefined }));
+    setTimeout(() => inProject(project, () => {
+      for (const { id, action, old } of changes) {
+        const cur = tasks().get(id);
+        if (action === 'delete') removeTaskState(id);
+        else if (action === 'add' && !taskState().has(id)) setTaskState(id, {});
+        else if (action === 'update' && cur && old && old.spec !== cur.spec) specChanged(id, cur.editedBy || 'someone', cur.spec, cur.why);
       }
       schedule();
-    });
+    }));
   });
 }
 
 async function holdFor(s: SessionData, name: string) {
-  active.get(s.id)?.abort();
+  active.get(key(s.id))?.abort();
   setSession(s.id, { state: 'paused' });
   setTaskState(s.taskId, { status: 'paused', owner: { kind: 'human', name }, note: `${name} is working on it` });
   s.takeoverBase = await head(worktreeDir(s.taskId));

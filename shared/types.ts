@@ -13,6 +13,15 @@ export interface TaskSpec {          // ydoc.getMap('tasks'): written by browser
   createdBy: string;
 }
 
+export interface Project {           // GET /api/projects; the registry lives on the server (data/projects.json)
+  id: string;                        // also the Y.Doc name and the folder under data/projects/
+  name: string;
+  goal: string;                      // one or two sentences, shown on Overview
+  repo: string | null;               // GitHub owner/repo that Approve pushes to
+  createdBy: string;
+  createdAt: string;
+}
+
 export interface Owner { kind: 'agent' | 'human'; name: string }   // agent: name 'agent'
 
 export interface TaskState {         // ydoc.getMap('taskState'): server only
@@ -60,8 +69,7 @@ export interface ChatMessage {       // ydoc.getArray('chat'): server only (brow
   at: string;
 }
 
-// Y.Doc layout
-export const DOC_NAME = 'hive';
+// Y.Doc layout: one doc per project, named by the project id
 export const MAPS = {
   tasks: 'tasks',                    // TaskSpec, browsers + server
   taskState: 'taskState',            // TaskState, server only

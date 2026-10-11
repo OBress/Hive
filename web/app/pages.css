@@ -593,3 +593,31 @@ button.hv-mention:hover { translate: 0 -2px; box-shadow: 2px 2px 0 var(--ink); }
   .hv-envrow { grid-template-columns: 1fr; }
   .hv-envrow__value { justify-items: start; }
 }
+
+/* ---- Projects (/projects) ---- */
+.hv-projects { max-width: 1180px; margin: 0 auto; }
+.hv-projects h1 { margin: 6px 0 26px; font-size: clamp(36px, 4.4vw, 56px); font-weight: 800; letter-spacing: -0.045em; }
+.hv-projects__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 26px; align-items: start; }
+.hv-projects__grid > * { animation: hv-pop-in .45s var(--pop) both; }
+.hv-projects__card {
+  display: flex; flex-direction: column; gap: 12px; min-height: 220px; rotate: var(--tilt, 0deg); text-decoration: none; color: var(--ink);
+  transition: translate var(--hover) var(--bounce), box-shadow var(--hover) var(--bounce);
+}
+.hv-projects__card:hover { translate: -3px -3px; box-shadow: 9px 9px 0 var(--ink); }
+.hv-projects__card h2, .hv-projects__new h2 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.03em; overflow-wrap: anywhere; }
+.hv-projects__card p { margin: 0; font-size: 15px; line-height: 1.45; flex: 1; }
+.hv-projects__cardtop { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.hv-projects__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font: 400 12px var(--mono); }
+.hv-projects__open { align-self: flex-end; display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+.hv-projects__card:hover .hv-projects__open svg { translate: 4px 0; transition: translate var(--hover) var(--pop); }
+.hv-projects__new { display: flex; flex-direction: column; gap: 14px; }
+.hv-projects__new h2 { display: flex; align-items: center; gap: 8px; }
+.hv-projects__new label { display: grid; gap: 6px; }
+.hv-projects__new label span { font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+.hv-projects__new .hv-btn { align-self: flex-start; }
+.hv-projects__err { margin: 0; padding: 8px 12px; background: var(--paper); border: 2px solid var(--ink); border-radius: var(--r-sm); font-size: 14px; }
+.hv-projects__msg { padding: 40px; text-align: center; font: 400 14px var(--mono); }
+.hv-top > .hv-projectswitch { display: inline-flex; text-decoration: none; align-items: center; gap: 4px; max-width: 220px; flex-shrink: 0; }
+.hv-projectswitch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1360px) { .hv-top > .hv-projectswitch { max-width: 160px; } }
+@media (prefers-reduced-motion: reduce) { .hv-projects__grid > * { animation: none; } }

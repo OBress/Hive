@@ -1,31 +1,34 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { git, withRepoLock, HIVE, type Author } from './git.ts';
-import { TEMPLATE, WORKSPACE, WORKTREES } from './paths.ts';
+import { TEMPLATE } from './paths.ts';
+import { workspaceDir, worktreesDir } from './projects.ts';
 
-export const worktreeDir = (taskId: string) => join(WORKTREES, taskId);
+export const worktreeDir = (taskId: string) => join(worktreesDir(), taskId);
 
 export async function ensureWorkspace() {
-  if (existsSync(join(WORKSPACE, '.git'))) return;
-  rmSync(WORKSPACE, { recursive: true, force: true });
-  cpSync(TEMPLATE, WORKSPACE, { recursive: true });
-  await git(WORKSPACE, ['init', '-b', 'main']);
-  await git(WORKSPACE, ['add', '-A']);
-  await git(WORKSPACE, ['commit', '-m', 'Start Hive workspace'], HIVE);
-  console.log('Created data/workspace');
+  const repo = workspaceDir();
+  if (existsSync(join(repo, '.git'))) return;
+  rmSync(repo, { recursive: true, force: true });
+  cpSync(TEMPLATE, repo, { recursive: true });
+  await git(repo, ['init', '-b', 'main']);
+  await git(repo, ['add', '-A']);
+  await git(repo, ['commit', '-m', 'Start Hive workspace'], HIVE);
+  console.log(`Created ${repo}`);
 }
 
 // Each task gets its own folder on branch task/<id>, cut from main.
 export function ensureWorktree(taskId: string): Promise<string> {
   const dir = worktreeDir(taskId);
+  const repo = workspaceDir();
   return withRepoLock(async () => {
     if (existsSync(join(dir, '.git'))) return dir;
     rmSync(dir, { recursive: true, force: true });
-    mkdirSync(WORKTREES, { recursive: true });
-    await git(WORKSPACE, ['worktree', 'prune']);
+    mkdirSync(worktreesDir(), { recursive: true });
+    await git(repo, ['worktree', 'prune']);
     const branch = `task/${taskId}`;
-    const exists = await git(WORKSPACE, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
-    await git(WORKSPACE, exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', dir, '-b', branch, 'main']);
+    const exists = await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
+    await git(repo, exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', dir, '-b', branch, 'main']);
     return dir;
   });
 }
@@ -86,13 +89,14 @@ export const diff = (dir: string, from: string, to: string, path?: string) =>
   git(dir, ['diff', `${from}..${to}`, ...(path ? ['--', path] : [])]);
 
 export function mergeToMain(taskId: string): Promise<{ ok: true; commit: string } | { ok: false; files: string[] }> {
+  const repo = workspaceDir();
   return withRepoLock(async () => {
     try {
-      await git(WORKSPACE, ['merge', '--no-ff', '-m', `Merge task/${taskId}`, `task/${taskId}`], HIVE);
-      return { ok: true as const, commit: await head(WORKSPACE) };
+      await git(repo, ['merge', '--no-ff', '-m', `Merge task/${taskId}`, `task/${taskId}`], HIVE);
+      return { ok: true as const, commit: await head(repo) };
     } catch {
-      const files = (await git(WORKSPACE, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')).split('\n').filter(Boolean);
-      await git(WORKSPACE, ['merge', '--abort']).catch(() => {});
+      const files = (await git(repo, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')).split('\n').filter(Boolean);
+      await git(repo, ['merge', '--abort']).catch(() => {});
       return { ok: false as const, files };
     }
   });

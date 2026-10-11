@@ -1,17 +1,9 @@
 'use client';
 
-// Static project info for the Overview page (goal and stack, from SPEC.md) plus the GitHub
-// repo the person types in. Everything else on the Overview is derived from live state.
+// Static stack info for the Overview page plus the current project's GitHub repo.
+// Everything else on the Overview is derived from live state.
 
-import { useSyncExternalStore } from 'react';
-import { authHeaders, loadConfig } from './auth';
-import { apiUrl } from './hive';
-
-export const PROJECT = {
-  name: 'url-shortener',
-  goal: 'A tiny URL shortener API (create, redirect, stats) with tests, planned and built by people and AI agents in one live task graph, then shipped to GitHub.',
-  deadline: 'Demo day · 90-second live run',
-};
+import { setProjectRepo, useProject } from './projects';
 
 export const STACK: { group: string; items: { name: string; note: string }[] }[] = [
   { group: 'Frontend', items: [{ name: 'Next.js 16', note: 'client-only SPA' }, { name: 'React 19', note: 'UI' }, { name: 'React Flow 12', note: 'task + arch graphs' }] },
@@ -23,22 +15,9 @@ export const STACK: { group: string; items: { name: string; note: string }[] }[]
 
 export interface Commit { sha: string; message: string; author: string; branch: string; at: number /* ms */ }
 
-// The push target (owner/repo), stored on the server: Approve pushes there. Shared by every tab.
-let repo: string | null = null;
-let loaded = false;
-const listeners = new Set<() => void>();
-const emit = () => listeners.forEach((l) => l());
-const sub = (l: () => void) => {
-  if (!loaded) { loaded = true; loadConfig().then((c) => { repo = c.repo; emit(); }, () => { loaded = false; }); }
-  listeners.add(l);
-  return () => { listeners.delete(l); };
-};
-export const useRepo = () => useSyncExternalStore(sub, () => repo, () => repo);
-export function connectRepo(r: string | null) {
-  fetch(apiUrl('/api/repo'), { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ repo: r }) })
-    .then((res) => res.json())
-    .then((j: { repo?: string | null; error?: string }) => { if (!j.error) { repo = j.repo ?? null; emit(); } }, () => {});
-}
+// The current project's push target (owner/repo): Approve pushes there. Shared by every tab.
+export const useRepo = (): string | null => useProject()?.repo ?? null;
+export const connectRepo = (r: string | null) => { setProjectRepo(r).catch(() => {}); };
 
 export function timeAgo(ms: number, now: number): string {
   const s = Math.max(0, Math.round((now - ms) / 1000));

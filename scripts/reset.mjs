@@ -1,7 +1,8 @@
-// Delete the saved doc, the agent workspace, worktrees and session transcripts so the next start is an empty graph.
+// Delete every project (its doc, workspace, worktrees and session transcripts) so the next start has no projects.
+// The older single-project files (doc.bin, workspace/ ...) are removed too.
 import { rmSync } from 'node:fs';
 
-for (const p of ['doc.bin', 'epoch.txt', 'workspace', 'worktrees', 'sessions']) {
+for (const p of ['projects.json', 'projects', 'epoch.txt', 'doc.bin', 'repo.json', 'workspace', 'worktrees', 'sessions']) {
   rmSync(new URL(`../data/${p}`, import.meta.url), { recursive: true, force: true });
 }
-console.log('Reset: data/doc.bin, workspace, worktrees and sessions removed. Restart `pnpm dev` to start fresh.');
+console.log('Reset: all projects removed. Restart `pnpm dev` to start fresh.');

@@ -23,11 +23,12 @@ Optimize for demo reliability and readability over generality.
 hive/
   package.json            root scripts: `pnpm dev` (server + web), `pnpm reset`, `pnpm test`
   AGENTS.md, INTEGRATION.md
-  scripts/reset.mjs       deletes data/doc.bin, workspace, worktrees, sessions
+  scripts/reset.mjs       deletes every project (data/projects.json, data/projects/)
   shared/                 `@hive/shared`: types.ts (the contract)
   server/                 Node + TS via tsx, Express + Hocuspocus on :4000
     index.ts              HTTP + websocket, doc load/save, startup recovery
     paths.ts              data/ locations
+    projects.ts           project list, per-project folders, the current-project context (AsyncLocalStorage)
     doc.ts                getDoc/setDoc and typed helpers; serverWrite(fn)
     llm.ts                generate() for openai (Luminal) / anthropic / fake; model selection
     git.ts                git via execFile; withRepoLock()
@@ -43,9 +44,9 @@ hive/
     settings.ts           /api/config, doc epoch, push repo, env status
     smoke.ts              end-to-end demo check with LLM_PROVIDER=fake
     smoke-seed.json       the URL shortener graph the smoke test starts from (HIVE_SEED)
-    workspace-template/   the project agents build (copied to data/workspace)
+    workspace-template/   starting files for each project's workspace
   web/                    Next.js client-only SPA on :5173 (owner: Owen)
-  data/                   runtime only, gitignored: doc.bin, workspace/, worktrees/, sessions/
+  data/                   runtime only, gitignored: projects.json, projects/<id>/{doc.bin, workspace/, worktrees/, sessions/}
 ```
 
 Target about 1,500 lines for all of `server/`. If a file grows past its job, simplify.
@@ -55,7 +56,7 @@ Target about 1,500 lines for all of `server/`. If a file grows past its job, sim
 ```bash
 pnpm i                         # install
 pnpm dev                       # server on :4000 and web on :5173
-pnpm reset                     # wipe data/ state so the next start is an empty graph
+pnpm reset                     # delete every project so the next start is empty
 pnpm test                      # unit tests (vitest in server/)
 pnpm --filter server typecheck
 pnpm --filter server smoke     # full demo against the fake provider
@@ -71,12 +72,13 @@ Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and 
 
 ## Architecture invariants
 
-- **One Y.Doc** named `"hive"` holds all live state, synced by Hocuspocus. Keys: maps `tasks`, `taskState`, `sessions`, `live`; arrays `steps`, `chat`.
+- **Projects:** Hive holds a list of projects; each has its own Y.Doc (named by the project id), workspace, worktrees, sessions and push repo under `data/projects/<id>/`. REST for one project lives under `/api/projects/:project/...`; server code runs inside that project's context (`inProject`), so `tasks()`, `workspaceDir()` and friends resolve to it. Agent loops keep the context they were started in.
+- **One Y.Doc per project** holds that project's live state, synced by Hocuspocus. Keys: maps `tasks`, `taskState`, `sessions`, `live`; arrays `steps`, `chat`.
 - **Browsers write only `tasks`** (create, edit `title`/`spec`/`deps`/`x`/`y`/`editedBy`/`why`, delete). Everything else is server-only; browsers act through REST.
 - **The server writes inside `serverWrite(fn)`** (`doc.transact(fn, 'server')`). Observers ignore origin `'server'`. Store plain JSON only (`clean()` strips `undefined`).
 - Server code reads the doc only through `server/doc.ts` (the Hocuspocus-managed instance kept loaded by a direct connection). Never construct a separate `Y.Doc`.
-- The doc is saved to `data/doc.bin` every 2 s. Agent transcripts live in `data/sessions/<id>.json`, never in the doc.
-- Each task works in its own git worktree `data/worktrees/<id>` on branch `task/<id>`; finished tasks merge into `main` of `data/workspace` under a repo lock.
+- Each doc is saved to `data/projects/<id>/doc.bin` every 2 s. Agent transcripts live in `data/projects/<id>/sessions/<sid>.json`, never in the doc.
+- Each task works in its own git worktree `data/projects/<p>/worktrees/<id>` on branch `task/<id>`; finished tasks merge into `main` of that project's `workspace/` under a repo lock.
 - Every agent write and every human edit is its own commit. Agents commit as "Hive Agent"; people commit under their own name (GitHub noreply email when signed in).
 - **Endpoints that start work return 202**; results arrive through the Y.Doc.
 
@@ -88,7 +90,18 @@ Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tabl
 
 | Method and path | Body | Does |
 |---|---|---|
-| GET /api/health | | `{ok, tasks, provider, models}` |
+| GET /api/health | | `{ok, projects, provider, models}` |
+| GET /api/projects | | `{projects}` |
+| POST /api/projects | `{name, goal, by}` | 201 the new project |
+| GET /api/config | | `{auth, supabaseUrl, supabaseAnonKey, epoch}` |
+| GET/POST /api/env | `{name, value}` | Which vars are set; write one (server machine only) |
+| GET /api/me | | `{user, githubConnected}` |
+| POST /api/github/token | `{providerToken}` | Keep GitHub token in memory |
+
+The rows below are per project: prefix them with `/api/projects/:project` (e.g. `POST /api/projects/:project/run`).
+
+| Method and path | Body | Does |
+|---|---|---|
 | GET /api/state | | JSON snapshot of the doc |
 | POST /api/run | `{by}` | Auto-run: start ready tasks |
 | POST /api/tasks/:id/start | `{by}` | Start one task (409 unless deps done) |
@@ -103,11 +116,7 @@ Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tabl
 | POST /api/chat | `{from, text}` | Planner reply appended to chat |
 | GET /api/history?taskId= | | Steps for a task |
 | POST /api/approve | `{by}` | Test main, push to GitHub |
-| GET /api/config | | `{auth, supabaseUrl, supabaseAnonKey, epoch, repo}` |
-| POST /api/repo | `{repo}` | Set the push target (owner/repo) |
-| GET/POST /api/env | `{name, value}` | Which vars are set; write one (server machine only) |
-| GET /api/me | | `{user, githubConnected}` |
-| POST /api/github/token | `{providerToken}` | Keep GitHub token in memory |
+| POST /api/repo | `{repo}` | Set this project's push target (owner/repo) |
 
 Errors are always `{error: "message"}` with a proper status code. Full examples are in `INTEGRATION.md`.
 

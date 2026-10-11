@@ -2,9 +2,22 @@
 
 How the frontend talks to the Hive server. Types are in `shared/types.ts`; import them from `@hive/shared/types`.
 
+## Projects
+
+Hive holds a list of projects (`Project` in `shared/types.ts`). Each one has its own Y.Doc, chat, agents, git workspace and GitHub push repo; nothing is shared between them. The web app names the current project with `?project=<id>` in the URL (`web/lib/projects.ts`); `/projects` lists them and creates new ones. Switching projects is a full page load, since there is one doc provider per tab.
+
+| Method and path | Body | Response |
+|---|---|---|
+| GET /api/projects | | `{projects: Project[]}` |
+| POST /api/projects | `{name, goal?, by}` | 201 `Project` (id is a slug of the name plus a random suffix) |
+| GET /api/projects/:project | | `Project` |
+| POST /api/projects/:project/repo | `{repo: "owner/repo" \| null}` | `Project`; sets that project's push target for Approve (overrides `GITHUB_REMOTE`) |
+
+On disk: `data/projects.json` (the list) and `data/projects/<id>/` with `doc.bin`, `workspace/`, `worktrees/` and `sessions/`.
+
 ## The Y.Doc
 
-One Y.Doc named `hive` (`DOC_NAME`), synced by Hocuspocus at `ws://<host>:4000`. Load all state from it and re-render on changes.
+One Y.Doc per project, **named by the project id**, synced by Hocuspocus at `ws://<host>:4000`. Load all state from it and re-render on changes.
 
 | Key | Type | Written by | Holds |
 |---|---|---|---|
@@ -24,7 +37,7 @@ Useful derived views:
 
 ## REST
 
-Base URL `http://<host>:4000`. JSON bodies. Endpoints that start work return **202** and the result arrives through the doc. Errors are always:
+Base URL `http://<host>:4000`. JSON bodies. Every endpoint in the table below except `/api/health`, `/api/config`, `/api/env`, `/api/me` and `/api/github/token` is **per project**: write `/api/state` as `/api/projects/<id>/state`, `/api/run` as `/api/projects/<id>/run`, and so on. Endpoints that start work return **202** and the result arrives through the doc. Errors are always:
 
 ```json
 { "error": "Task not found" }
@@ -36,7 +49,7 @@ When auth is on (see below), `by`/`from` in bodies are ignored and replaced by t
 
 | Method and path | Body | Response |
 |---|---|---|
-| GET /api/health | | `{ok: true, tasks: 4, provider: "fake", models: {agent, planner}, auth: false}` |
+| GET /api/health | | `{ok: true, projects: 2, provider: "fake", models: {agent, planner}, auth: false}` |
 | GET /api/state | | `{tasks, taskState, sessions, live, steps, chat}` (whole doc as JSON) |
 | POST /api/run | `{by}` | 202 `{started: ["store"]}`: auto-run on, starts ready tasks now and later |
 | POST /api/tasks/:id/start | `{by}` | 202 `{sessionId}`; 409 if deps aren't done or it's already running |
@@ -51,8 +64,7 @@ When auth is on (see below), `by`/`from` in bodies are ignored and replaced by t
 | POST /api/chat | `{from, text}` | 202 `{id}`; Planner reply appears in `chat` (may also edit `tasks`) |
 | GET /api/history?taskId=stats | | `{steps: Step[], source: "mongo" \| "doc"}` |
 | POST /api/approve | `{by}` | `{ok: true, commit, pushed, url, pushError?}`; 409 `{ok: false, error, output}` if tests fail on main |
-| GET /api/config | | `{auth, supabaseUrl?, supabaseAnonKey?, epoch, repo}`: what the browser needs before connecting (the anon key is public) |
-| POST /api/repo | `{repo: "owner/repo" \| null}` | Sets the push target for Approve (overrides `GITHUB_REMOTE`) |
+| GET /api/config | | `{auth, supabaseUrl?, supabaseAnonKey?, epoch}`: what the browser needs before connecting (the anon key is public) |
 | GET /api/env | | `{NAME: {set: boolean}}` for every server variable; never values |
 | POST /api/env | `{name, value}` | Writes one variable to `.env`; **only from the machine running the server** (403 otherwise); `{ok, restartNeeded}` |
 | GET /api/me | | `{user: HiveUser \| null, githubConnected}` (`user` is null when auth is off) |
@@ -61,15 +73,15 @@ When auth is on (see below), `by`/`from` in bodies are ignored and replaced by t
 Examples:
 
 ```http
-POST /api/sessions/s_stats_1/steer
+POST /api/projects/url-shortener-f4e2/sessions/s_stats_1/steer
 {"from": "Ben", "text": "count unique visitors, not hits"}
 → 202 {"ok": true}
 
-POST /api/tasks/redirect/handoff
+POST /api/projects/url-shortener-f4e2/tasks/redirect/handoff
 {"by": "Ana", "to": "Ben", "note": "can you finish the edge cases?"}
 → 200 {"summary": "Done: ...\nLeft: ...\nTried and failed: ...\nOpen questions: ..."}
 
-POST /api/chat
+POST /api/projects/url-shortener-f4e2/chat
 {"from": "Cal", "text": "what happened on stats?"}
 → 202 {"id": "c_..."}   then chat gets {from: "planner", text, cites: ["st_12", "st_15"]}
 ```
@@ -88,7 +100,7 @@ Supabase setup: Authentication → Providers → GitHub on (client id/secret fro
 
 ## Doc epoch (resets)
 
-Each fresh start (first run or `pnpm reset`) gets a new epoch. A tab sends the epoch it loaded with in its websocket token; a tab from before the reset is refused with reason `stale-epoch` and reloads itself, instead of syncing its old doc into the fresh server.
+Each fresh start (first run or `pnpm reset`, which deletes every project) gets a new epoch. A tab sends the epoch it loaded with in its websocket token; a tab from before the reset is refused with reason `stale-epoch` and reloads itself, instead of syncing its old doc into the fresh server.
 
 ## How the frontend should use this
 

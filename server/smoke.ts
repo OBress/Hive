@@ -10,7 +10,6 @@ import { git } from './git.ts';
 import { SERVER_DIR } from './paths.ts';
 
 const DATA_DIR = join(tmpdir(), 'hive-smoke');
-const WORKSPACE = join(DATA_DIR, 'workspace');
 
 interface State { tasks: Record<string, TaskSpec>; taskState: Record<string, TaskState>; sessions: Record<string, SessionView>; steps: Step[]; chat: ChatMessage[] }
 
@@ -23,7 +22,8 @@ function check(name: string, ok: boolean, detail = '') {
 const port = await new Promise<number>((resolve) => {
   const s = createServer().listen(0, () => { const p = (s.address() as { port: number }).port; s.close(() => resolve(p)); });
 });
-const base = `http://localhost:${port}/api`;
+const root = `http://localhost:${port}/api`;
+let base = root;   // becomes /api/projects/<id> once the seeded project is known
 
 rmSync(DATA_DIR, { recursive: true, force: true });
 const child = spawn(process.execPath, ['--import', 'tsx', 'index.ts'], {
@@ -53,9 +53,28 @@ const plansAfter = (s: State, stepId: string, sid: string) => {
   return s.steps.slice(i + 1).filter((x) => x.kind === 'plan' && x.sessionId === sid);
 };
 
+async function projects(): Promise<{ id: string; name: string }[]> {
+  return ((await (await fetch(`${root}/projects`)).json()) as { projects: { id: string; name: string }[] }).projects;
+}
+
 try {
+  const end = Date.now() + 20000;
+  let list: { id: string; name: string }[] = [];
+  while (!list.length && Date.now() < end) {
+    list = await projects().catch(() => []);
+    if (!list.length) await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!list.length) throw new Error('No seeded project');
+  const projectId = list[0].id;
+  base = `${root}/projects/${projectId}`;
   await until('server', (s) => s.tasks && Object.keys(s.tasks).length === 4, 20000);
-  check('server starts with the seeded graph', true);
+  check('server starts with a project holding the seeded graph', true, projectId);
+
+  // A second project is separate: its own empty graph and workspace.
+  const made = await fetch(`${root}/projects`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Second project', by: 'Ana' }) });
+  const second = (await made.json()) as { id: string };
+  const other = (await (await fetch(`${root}/projects/${second.id}/state`)).json()) as State;
+  check('a new project starts empty and separate', made.status === 201 && Object.keys(other.tasks).length === 0 && (await projects()).length === 2, second.id);
 
   const run = await call('POST', '/run', { by: 'Ana' });
   check('POST /api/run starts store', run.status === 202 && run.json.started?.includes('store'), JSON.stringify(run.json));
@@ -109,7 +128,7 @@ try {
   const approve = await call('POST', '/approve', { by: 'Ana' });
   check('approve passes tests on main', approve.status === 200 && approve.json.ok === true, `commit ${approve.json.commit}, pushed ${approve.json.pushed}`);
 
-  const authors = (await git(WORKSPACE, ['log', '--format=%an'])).split('\n');
+  const authors = (await git(join(DATA_DIR, 'projects', projectId, 'workspace'), ['log', '--format=%an'])).split('\n');
   check('git log has commits by Hive Agent and by Ana', authors.includes('Hive Agent') && authors.includes('Ana'), [...new Set(authors.filter(Boolean))].join(', '));
 } catch (e) {
   check('smoke run', false, (e as Error).message);

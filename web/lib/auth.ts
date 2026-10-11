@@ -7,7 +7,7 @@ import { useSyncExternalStore } from 'react';
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { SERVER_PORT } from '@hive/shared/types';
 
-export interface ServerConfig { auth: boolean; supabaseUrl?: string; supabaseAnonKey?: string; epoch: string; repo: string | null }
+export interface ServerConfig { auth: boolean; supabaseUrl?: string; supabaseAnonKey?: string; epoch: string }
 export interface AuthState { ready: boolean; auth: boolean; login: string | null; error?: string }
 
 // Where the server is: NEXT_PUBLIC_SERVER_URL when the app is hosted (set at build time, e.g. https://api.example.com);

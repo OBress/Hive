@@ -2,42 +2,24 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import express from 'express';
 import { Server } from '@hocuspocus/server';
 import * as Y from 'yjs';
-import { DOC_NAME, MAPS, SERVER_PORT, type TaskSpec } from '@hive/shared/types';
+import { MAPS, SERVER_PORT, type Project, type TaskSpec } from '@hive/shared/types';
 import { authMiddleware, initAuth, wsAuthenticate } from './auth.ts';
-import { getDoc, setDoc } from './doc.ts';
+import { serverWrite, syncTaskStates } from './doc.ts';
 import { initModels } from './llm.ts';
 import { initMongo } from './mongo.ts';
-import { DATA_DIR, DOC_FILE } from './paths.ts';
-import { errorHandler, routes } from './routes.ts';
+import { DATA_DIR } from './paths.ts';
+import {
+  createProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setOpener, setProjectDoc,
+} from './projects.ts';
+import { api, errorHandler } from './routes.ts';
 import { disposeSandbox, warmSandbox } from './sandbox.ts';
 import { getEpoch, initEpoch, settings } from './settings.ts';
 import { recover, watchTasks } from './session.ts';
 import { ensureWorkspace } from './workspace.ts';
 
 const PORT = Number(process.env.PORT || SERVER_PORT);
-let doc: Y.Doc | null = null;
 let saver: NodeJS.Timeout | undefined;
-const save = () => writeFileSync(DOC_FILE, Y.encodeStateAsUpdate(getDoc()));
-
-// Fill a freshly created doc from data/doc.bin. A fresh start (first run or after `pnpm reset`) is an empty graph,
-// unless HIVE_SEED names a JSON file of tasks (the smoke test uses smoke-seed.json).
-function loadInto(doc: Y.Doc) {
-  if (existsSync(DOC_FILE)) {
-    Y.applyUpdate(doc, readFileSync(DOC_FILE));
-    initEpoch(false);
-    console.log('Loaded data/doc.bin');
-    return;
-  }
-  const seed = process.env.HIVE_SEED;
-  if (seed) {
-    const tasks = doc.getMap<TaskSpec>(MAPS.tasks);
-    doc.transact(() => {
-      for (const t of (JSON.parse(readFileSync(seed, 'utf8')) as { tasks: TaskSpec[] }).tasks) tasks.set(t.id, t);
-    }, 'server');
-  }
-  initEpoch(true);
-  console.log(seed ? `Loaded ${seed}` : 'Started with an empty graph');
-}
+const saveAll = () => { for (const [id, doc] of loadedDocs()) writeFileSync(docFile(id), Y.encodeStateAsUpdate(doc)); };
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -48,15 +30,16 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return void res.sendStatus(204);
   next();
 });
-app.use('/api', authMiddleware, settings, routes);
+app.use('/api', authMiddleware, settings, api);
 app.use(errorHandler);
 
 const server = new Server({
   name: 'hive',
   quiet: true,
+  // Each project is one doc named by its id, saved in data/projects/<id>/doc.bin.
   async onLoadDocument({ documentName, document }) {
-    if (documentName !== DOC_NAME) throw new Error(`Unknown document ${documentName}`);
-    loadInto(document);
+    if (!getProject(documentName)) throw new Error(`Unknown project ${documentName}`);
+    if (existsSync(docFile(documentName))) Y.applyUpdate(document, readFileSync(docFile(documentName)));
   },
   onAuthenticate: (data) => wsAuthenticate(data, getEpoch()),
   // Our direct connection keeps the doc loaded, so Hocuspocus's own shutdown would wait forever.
@@ -70,27 +53,42 @@ const server = new Server({
   },
 });
 
+// A server-side connection keeps each project's doc loaded even with no browsers open; server code uses it via doc.ts.
+async function open(p: Project, seed?: TaskSpec[]) {
+  const direct = await server.hocuspocus.openDirectConnection(p.id);
+  setProjectDoc(p.id, direct.document!);
+  await inProject(p.id, async () => {
+    await ensureWorkspace();
+    if (seed) serverWrite(() => { for (const t of seed) direct.document!.getMap<TaskSpec>(MAPS.tasks).set(t.id, t); });
+    syncTaskStates();
+    recover();
+    watchTasks();
+  });
+}
+setOpener((p) => open(p));
+
 mkdirSync(DATA_DIR, { recursive: true });
-await ensureWorkspace();
+initEpoch(!registryExists());   // a fresh data/ (first run or `pnpm reset`) gets a new epoch
+const projects = loadProjects();
 initAuth();
 await Promise.all([initModels(), initMongo()]);
 await server.listen(PORT);
-
-// A server-side connection keeps the doc loaded even with no browsers open; server code uses it via doc.ts.
-const direct = await server.hocuspocus.openDirectConnection(DOC_NAME);
-doc = direct.document!;
-setDoc(doc);
-recover();
-watchTasks();
+for (const p of projects) await open(p);
+// HIVE_SEED names a JSON file of tasks for a first project (the smoke test uses smoke-seed.json).
+const seed = process.env.HIVE_SEED;
+if (seed && !projects.length) {
+  await open(createProject('URL shortener', 'A tiny URL shortener API with tests.', 'seed'), (JSON.parse(readFileSync(seed, 'utf8')) as { tasks: TaskSpec[] }).tasks);
+  console.log(`Seeded a project from ${seed}`);
+}
 warmSandbox();
-saver = setInterval(save, 2000);
-// Save once and exit on Ctrl+C / kill, so no orphan keeps writing an old doc to data/doc.bin.
+saver = setInterval(saveAll, 2000);
+// Save once and exit on Ctrl+C / kill, so no orphan keeps writing an old doc.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     clearInterval(saver);
-    if (doc) save();
+    saveAll();
     void disposeSandbox().finally(() => process.exit(0));
   });
 }
 
-console.log(`Hive server on http://localhost:${PORT} (ws doc "${DOC_NAME}")`);
+console.log(`Hive server on http://localhost:${PORT} (${projects.length} project${projects.length === 1 ? '' : 's'})`);

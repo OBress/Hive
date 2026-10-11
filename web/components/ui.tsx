@@ -18,6 +18,7 @@ const PATHS = {
   pencil: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
   lock: 'M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 017 0v3',
   copy: 'M9 9h10v10H9zM5 15V5h10',
+  chevron: 'M6 9l6 6 6-6',
 } as const;
 
 export type IconName = keyof typeof PATHS;

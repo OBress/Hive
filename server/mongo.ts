@@ -1,6 +1,7 @@
 import { MongoClient, type Db } from 'mongodb';
 import type { Step } from '@hive/shared/types';
 import { mirrors, steps } from './doc.ts';
+import { currentId } from './projects.ts';
 
 // Optional history mirror. The Y.Doc stays the live source of truth; Mongo never blocks the demo.
 let db: Db | null = null;
@@ -15,8 +16,8 @@ export async function initMongo() {
     let name = 'hive';
     try { name = decodeURIComponent(new URL(uri).pathname.slice(1)) || 'hive'; } catch { /* keep default */ }
     db = client.db(name);
-    mirrors.step = (s) => void db?.collection('steps').insertOne({ ...s }).catch(logErr('step insert'));
-    mirrors.chat = (m) => void db?.collection('chat').insertOne({ ...m }).catch(logErr('chat insert'));
+    mirrors.step = (s) => void db?.collection('steps').insertOne({ ...s, project: currentId() }).catch(logErr('step insert'));
+    mirrors.chat = (m) => void db?.collection('chat').insertOne({ ...m, project: currentId() }).catch(logErr('chat insert'));
     console.log(`MongoDB mirror on (database "${name}")`);
   } catch (e) {
     console.log(`MongoDB mirror off: ${(e as Error).message}`);
@@ -24,13 +25,13 @@ export async function initMongo() {
 }
 
 export function saveTranscript(s: { id: string; taskId: string }) {
-  void db?.collection<{ _id: string }>('sessions').replaceOne({ _id: s.id }, { ...s, _id: s.id }, { upsert: true }).catch(logErr('session save'));
+  void db?.collection<{ _id: string }>('sessions').replaceOne({ _id: `${currentId()}/${s.id}` }, { ...s, _id: `${currentId()}/${s.id}`, project: currentId() }, { upsert: true }).catch(logErr('session save'));
 }
 
 export async function history(taskId: string): Promise<{ steps: Step[]; source: 'mongo' | 'doc' }> {
   if (db) {
     try {
-      const rows = await db.collection<Step>('steps').find({ taskId }, { projection: { _id: 0 }, maxTimeMS: 2000 }).sort({ n: 1 }).toArray();
+      const rows = await db.collection<Step>('steps').find({ taskId, project: currentId() }, { projection: { _id: 0 }, maxTimeMS: 2000 }).sort({ n: 1 }).toArray();
       return { steps: rows as Step[], source: 'mongo' };
     } catch (e) {
       logErr('history read')(e as Error);

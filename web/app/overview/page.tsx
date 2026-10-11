@@ -7,7 +7,8 @@ import { Avatar, Icon, tilt } from '@/components/ui';
 import { usePeers, useUserName } from '@/lib/hive';
 import { useHive } from '@/lib/mock';
 import type { Decision } from '@/lib/types';
-import { connectRepo, PROJECT, STACK, timeAgo, useRepo, type Commit } from '@/lib/project';
+import { connectRepo, STACK, timeAgo, useRepo, type Commit } from '@/lib/project';
+import { appQuery, useProject } from '@/lib/projects';
 
 const BASE_NOW = Date.UTC(2026, 9, 11, 12, 0, 0);
 
@@ -25,7 +26,8 @@ export default function Overview() {
   const me = useUserName();
   const s = useHive();
   const now = useNow();
-  const q = me !== 'Guest' ? `?name=${encodeURIComponent(me)}` : '';
+  const project = useProject();
+  const q = appQuery(me);
 
   const tasks = Object.values(s.tasks);
   const done = tasks.filter((t) => s.runs[t.id]?.status === 'done');
@@ -51,11 +53,13 @@ export default function Overview() {
         <div className="hv-ov">
           <section className="hv-ov__goal hv-card hv-card--blue">
             <span className="hv-sticker hv-sticker--paper" style={tilt('goal')}>Project goal</span>
-            <h1>Ship a <span className="hv-wordbox hv-wordbox--xl">URL shortener</span> together</h1>
-            <p>{PROJECT.goal}</p>
-            <div className="hv-ov__goalmeta">
-              <span>{PROJECT.deadline}</span>
-            </div>
+            <h1>Ship <span className="hv-wordbox hv-wordbox--xl">{project?.name ?? '…'}</span> together</h1>
+            <p>{project?.goal || 'No goal yet. Describe what you are building in chat and the planner will lay out the tasks.'}</p>
+            {project && (
+              <div className="hv-ov__goalmeta">
+                <span>Started by {project.createdBy} · {new Date(project.createdAt).toLocaleDateString()}</span>
+              </div>
+            )}
           </section>
 
           <section className="hv-ov__stats">

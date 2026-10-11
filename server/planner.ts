@@ -3,6 +3,7 @@ import { addChat, HttpError, serverWrite, sessions, setSession, setTaskState, st
 import { applyOps } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
 import { history } from './mongo.ts';
+import { current } from './projects.ts';
 import { schedule, specChanged } from './session.ts';
 
 const SUMMARY_SYSTEM = `You summarize a coding agent's work on one task for a teammate who is picking it up.
@@ -82,7 +83,8 @@ export async function chat(from: string, text: string) {
       const st = states[t.id];
       return `- ${t.id} "${t.title}" deps=[${t.deps.join(', ')}] status=${st?.status ?? 'todo'} owner=${st?.owner.name ?? 'agent'}: ${t.spec}`;
     }).join('\n');
-    const messages: Msg[] = [{ role: 'user', content: `Tasks:\n${graph || '(none)'}\n\nRecent steps:\n${ordered.map(line).join('\n') || '(none)'}\n\n${from} asks: ${text}` }];
+    const project = current();
+    const messages: Msg[] = [{ role: 'user', content: `Project: ${project.name}${project.goal ? ` (goal: ${project.goal})` : ''}\n\nTasks:\n${graph || '(none)'}\n\nRecent steps:\n${ordered.map(line).join('\n') || '(none)'}\n\n${from} asks: ${text}` }];
 
     let out = extractJson(await generate({ model: models.planner, system: PLANNER_SYSTEM, messages, maxTokens: 2000 }));
     if (!out) {

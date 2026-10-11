@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join, relative } from 'node:path';
+import { DATA_DIR } from './paths.ts';
 import { listFiles } from './workspace.ts';
 
 // Agent-written code runs in a Daytona sandbox instead of on this machine (plain REST, no SDK).
@@ -92,7 +93,7 @@ export async function disposeSandbox() {
 
 // Mirror package.json, src/ and test/ of a local worktree into the sandbox; only changed files are sent.
 async function sync(b: Box, dir: string): Promise<string> {
-  const name = basename(dir);
+  const name = relative(DATA_DIR, dir).replace(/[^\w.-]+/g, '_');   // projects_<project>_worktrees_<task>
   const remote = `${b.root}/${name}`;
   const have = b.synced.get(name) ?? new Map<string, string>();
   b.synced.set(name, have);

@@ -1,13 +1,9 @@
 import * as Y from 'yjs';
 import { ARRAYS, MAPS, type ChatMessage, type SessionView, type Step, type TaskSpec, type TaskState } from '@hive/shared/types';
+import { projectDoc } from './projects.ts';
 
-// The Hocuspocus-managed doc, kept loaded by the server's direct connection (set in index.ts).
-let doc: Y.Doc | null = null;
-export const setDoc = (d: Y.Doc) => { doc = d; };
-export function getDoc(): Y.Doc {
-  if (!doc) throw new Error('Doc not loaded yet');
-  return doc;
-}
+// The current project's Hocuspocus-managed doc, kept loaded by the server's direct connection (see index.ts).
+export const getDoc = (): Y.Doc => projectDoc();
 
 export const tasks = () => getDoc().getMap<TaskSpec>(MAPS.tasks);
 export const taskState = () => getDoc().getMap<TaskState>(MAPS.taskState);

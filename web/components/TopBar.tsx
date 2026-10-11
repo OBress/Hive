@@ -5,7 +5,8 @@ import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { useAnnounce, usePeers, useStatus } from '@/lib/hive';
 import { useHive } from '@/lib/mock';
-import { Avatar } from './ui';
+import { appQuery, useProject } from '@/lib/projects';
+import { Avatar, Icon } from './ui';
 
 const TABS = [
   { href: '/overview', label: 'Overview' },
@@ -22,7 +23,8 @@ export default function TopBar({ me, openTaskId, children }: { me: string; openT
   const peers = usePeers().filter((p) => p.name !== me);
   const connected = useStatus() === 'connected';
   useAnnounce(me, openTaskId);
-  const q = me && me !== 'Guest' ? `?name=${encodeURIComponent(me)}` : '';
+  const project = useProject();
+  const q = appQuery(me);
   const active = Math.max(0, TABS.findIndex((t) => t.href === path));
 
   return (
@@ -34,7 +36,9 @@ export default function TopBar({ me, openTaskId, children }: { me: string; openT
         </svg>
         <span>Hive</span>
       </Link>
-      <span className="hv-wordbox">url-shortener</span>
+      <Link href={`/projects${appQuery(me, '')}`} className="hv-wordbox hv-projectswitch" title="All projects">
+        <span>{project?.name ?? '…'}</span> <Icon name="chevron" size={14} />
+      </Link>
 
       <nav className="hv-tabs" style={{ '--i': active, '--n': TABS.length } as React.CSSProperties} aria-label="Pages">
         <span className="hv-tabs__pill" />

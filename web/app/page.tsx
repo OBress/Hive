@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { StatusSticker, type DisplayStatus } from '@/components/Status';
 import { Avatar, Icon, tilt, type IconName } from '@/components/ui';
 
-// "/" is the landing page. With ?name= (the demo URLs) it skips straight to the workspace.
+// "/" is the landing page. With ?name= (the demo URLs) it skips straight to the project list.
 export default function Landing() {
   const router = useRouter();
   const [name, setName] = useState('');
@@ -15,13 +15,13 @@ export default function Landing() {
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('name')) {
       setSkipping(true);
-      router.replace(`/overview${window.location.search}`);
+      router.replace(`/projects${window.location.search}`);
     }
   }, [router]);
 
   const join = (e: FormEvent) => {
     e.preventDefault();
-    router.push(`/tasks?name=${encodeURIComponent(name.trim() || 'Guest')}`);
+    router.push(`/projects?name=${encodeURIComponent(name.trim() || 'Guest')}`);
   };
 
   if (skipping) return null;

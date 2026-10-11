@@ -2,17 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import { HocuspocusProvider } from '@hocuspocus/provider';
-import { DOC_NAME } from '@hive/shared/types';
 import { accessToken, initAuth, loadConfig, serverUrl, useAuth } from './auth';
+import { projectId } from './projects';
 
-// One provider per browser tab. The server host follows the page host so a LAN IP works too.
+// One provider per browser tab, on the current project's doc (?project=). The server host follows the page host so a LAN IP works too.
 let provider: HocuspocusProvider | null = null;
 
 export function getProvider(): HocuspocusProvider {
   if (!provider) {
     provider = new HocuspocusProvider({
       url: serverUrl().replace(/^http/, 'ws'),
-      name: DOC_NAME,
+      name: projectId(),
       // The doc epoch this page loaded with, plus the Supabase access token when sign-in is on.
       token: async () => {
         const { epoch } = await loadConfig();
