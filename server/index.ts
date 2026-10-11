@@ -6,7 +6,7 @@ import { MAPS, SERVER_PORT, type Project, type TaskSpec } from '@hive/shared/typ
 import { authMiddleware, initAuth, wsAuthenticate } from './auth.ts';
 import { serverWrite, syncTaskStates } from './doc.ts';
 import { initModels } from './llm.ts';
-import { initMirror } from './mongo.ts';
+import { initMirror } from './history.ts';
 import { DATA_DIR } from './paths.ts';
 import {
   createProject, updateProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setCloser, setOpener, setProjectDoc,
@@ -16,12 +16,12 @@ import { loadUsers } from './users.ts';
 import { disposeSandbox, warmSandbox } from './sandbox.ts';
 import { getEpoch, initEpoch, settings } from './settings.ts';
 import { preloadSessions, recover, watchTasks } from './session.ts';
-import { connectMongo, flushSessionsDb, loadDocDb, loadSessionsDb, mongoOn, saveDocDb } from './store.ts';
+import { connectStorage, flushSessionsDb, loadDocDb, loadSessionsDb, storageOn, saveDocDb } from './store.ts';
 import { ensureWorkspace } from './workspace.ts';
 
 const PORT = Number(process.env.PORT || SERVER_PORT);
 let saver: NodeJS.Timeout | undefined;
-// Every 2 s, save the docs that changed: to MongoDB when it is the store, else data/projects/<id>/doc.bin.
+// Every 2 s, save the docs that changed: to Supabase when it is the store, else data/projects/<id>/doc.bin.
 const dirty = new Set<string>();
 let saving: Promise<unknown> = Promise.resolve();
 function saveAll(): Promise<unknown> {
@@ -33,7 +33,7 @@ function saveAll(): Promise<unknown> {
     if (!doc) return;   // deleted since it changed
     const state = Y.encodeStateAsUpdate(doc);
     try {
-      if (mongoOn()) await saveDocDb(id, state);
+      if (storageOn()) await saveDocDb(id, state);
       else writeFileSync(docFile(id), state);
     } catch (e) {
       dirty.add(id);   // try again next round
@@ -58,10 +58,10 @@ app.use(errorHandler);
 const server = new Server({
   name: 'hive',
   quiet: true,
-  // Each project is one doc named by its id, kept in MongoDB or data/projects/<id>/doc.bin.
+  // Each project is one doc named by its id, kept in Supabase or data/projects/<id>/doc.bin.
   async onLoadDocument({ documentName, document }) {
     if (!getProject(documentName)) throw new Error(`Unknown project ${documentName}`);
-    const state = mongoOn() ? await loadDocDb(documentName) : existsSync(docFile(documentName)) ? readFileSync(docFile(documentName)) : null;
+    const state = storageOn() ? await loadDocDb(documentName) : existsSync(docFile(documentName)) ? readFileSync(docFile(documentName)) : null;
     if (state) Y.applyUpdate(document, state);
   },
   onAuthenticate: (data) => wsAuthenticate(data, getEpoch()),
@@ -85,7 +85,7 @@ async function open(p: Project, seed?: TaskSpec[]) {
   direct.document!.on('update', () => dirty.add(p.id));
   await inProject(p.id, async () => {
     await ensureWorkspace();
-    if (mongoOn()) preloadSessions(await loadSessionsDb(p.id));
+    if (storageOn()) preloadSessions(await loadSessionsDb(p.id));
     if (seed) serverWrite(() => { for (const t of seed) direct.document!.getMap<TaskSpec>(MAPS.tasks).set(t.id, t); });
     syncTaskStates();
     recover();
@@ -103,7 +103,7 @@ setCloser(async (id) => {
 });
 
 mkdirSync(DATA_DIR, { recursive: true });
-await connectMongo();
+await connectStorage();
 initMirror();
 await initEpoch(!registryExists());   // a fresh data/ (first run or `pnpm reset`) gets a new epoch
 const projects = await loadProjects();
@@ -128,7 +128,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     clearInterval(saver);
     for (const id of loadedDocs().keys()) dirty.add(id);
-    void Promise.all([saveAll(), flushSessionsDb(), disposeSandbox()]).finally(() => process.exit(0));
+    void Promise.allSettled([saveAll(), flushSessionsDb(), disposeSandbox()]).finally(() => process.exit(0));
   });
 }
 

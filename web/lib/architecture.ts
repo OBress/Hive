@@ -91,8 +91,8 @@ export const DEFS: Record<string, ArchDef & { x: number; y: number }> = {
     files: ['server/workspace.ts', 'server/git.ts', 'server/workspace-template/'], env: [] },
   storage: { x: 1500, y: 560, title: 'Storage', kind: 'files', zone: 'data', glyph: '⛁',
     ins: [p('store', 'read / write', 'store')], outs: [],
-    about: 'Project list, each Y.Doc, agent transcripts, users and the doc epoch. Files under data/ by default; MongoDB when MONGODB_URI is set (the git folders stay on disk either way).',
-    files: ['server/store.ts', 'server/mongo.ts', 'server/paths.ts', 'server/users.ts'], env: ['MONGODB_URI', 'MONGODB_DB'] },
+    about: 'Project list, each Y.Doc, agent transcripts, users and the doc epoch. Files under data/ by default; Supabase tables (hive_projects, hive_records) when SUPABASE_SERVICE_ROLE_KEY is set. The git folders stay on disk either way.',
+    files: ['server/store.ts', 'server/supabase.sql', 'server/paths.ts', 'server/users.ts'], env: ['SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL'] },
 
   llm: { x: 1880, y: 0, title: 'LLM provider', kind: '…', zone: 'external', glyph: '✦',
     ins: [p('in', 'messages', 'llm')], outs: [],
@@ -189,15 +189,15 @@ export function liveData(id: string, s: LiveInputs): Live {
     case 'web': return { health: 'live', widgets: [['you', s.me], ['online', String(s.online)], ['server', s.server]] };
     case 'api': return { health: up, widgets: [['address', s.server], ['projects', h ? String(h.projects) : '—'], ['sign-in', h ? (h.auth ? 'required' : 'off (?name=)') : '—']] };
     case 'rt': return { health: s.socket === 'connected' ? 'live' : s.reachable === false ? 'down' : 'wait',
-      widgets: [['this tab', s.socket], ['doc', or(s.project, 'none open')], ['saved', set('MONGODB_URI') ? 'MongoDB · 2 s' : 'doc.bin · 2 s']] };
+      widgets: [['this tab', s.socket], ['doc', or(s.project, 'none open')], ['saved', set('SUPABASE_SERVICE_ROLE_KEY') ? 'Supabase · 2 s' : 'doc.bin · 2 s']] };
     case 'session': return { health: up, widgets: [['agent', or(h?.models.agent)], ['parallel', set('MAX_PARALLEL') ? 'from .env' : '2'], ['max steps', set('MAX_STEPS') ? 'from .env' : '20']] };
     case 'planner': return { health: up, widgets: [['model', or(h?.models.planner)], ['vision', set('VISION_MODEL') ? 'VISION_MODEL' : h?.provider === 'anthropic' ? 'planner' : 'text only']] };
     case 'runner': return { health: up, widgets: [['runs on', sandbox ? 'Daytona' : 'this machine'], ['env', 'PATH + HOME only']] };
     case 'preview': return { health: up, widgets: [['browser', sandbox ? 'in sandbox' : set('CHROME_PATH') ? 'CHROME_PATH' : 'auto-detected']] };
     case 'git': return { health: up, widgets: [['main', 'workspace/'], ['tasks', 'worktrees/<id> · task/<id>']] };
     case 'storage': {
-      const mongo = set('MONGODB_URI');
-      return { health: up, kind: mongo ? 'MongoDB' : 'Files under data/', widgets: [['backend', mongo ? 'MongoDB' : 'data/ files'], ['transcripts', mongo ? 'sessions collection' : 'sessions/<sid>.json']] };
+      const hosted = set('SUPABASE_SERVICE_ROLE_KEY');
+      return { health: up, kind: hosted ? 'Supabase tables' : 'Files under data/', widgets: [['backend', hosted ? 'Supabase' : 'data/ files'], ['transcripts', hosted ? 'hive_records' : 'sessions/<sid>.json']] };
     }
     case 'llm': {
       if (!h) return { health: s.reachable === false ? 'down' : 'wait', widgets: [['provider', '—']] };

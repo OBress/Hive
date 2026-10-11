@@ -1,3 +1,4 @@
+-- For the full storage and approval setup, run server/supabase.sql instead.
 -- Account approval for Hive. Run once in the Supabase SQL editor.
 -- Every account gets a row in public.profiles; new ones start with approved = false.
 -- Approve someone in Table Editor -> profiles: tick "approved" on their row.
@@ -30,11 +31,11 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- Everyone who already has an account is approved.
+-- Existing accounts without a profile are approved; preserve later manual approval decisions on rerun.
 insert into public.profiles (id, login, approved)
 select id, coalesce(raw_user_meta_data ->> 'user_name', raw_user_meta_data ->> 'preferred_username', email), true
 from auth.users
-on conflict (id) do update set approved = true;
+on conflict (id) do nothing;
 
 -- People to share a project with: every account that has signed in, matched by GitHub username or name.
 -- Only an approved person can call it (the Hive server calls it with the person's own token).
