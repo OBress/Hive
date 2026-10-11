@@ -1,11 +1,16 @@
 // End-to-end demo check against the fake provider: `pnpm --filter server smoke`.
-// Deletes data/, starts the server on a spare port, drives the 90-second demo over HTTP, prints PASS/FAIL per check.
+// Uses its own data folder in the OS temp dir, starts the server on a spare port, drives the 90-second demo over HTTP, prints PASS/FAIL per check.
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ChatMessage, SessionView, Step, TaskSpec, TaskState } from '@hive/shared/types';
 import { git } from './git.ts';
-import { DATA_DIR, SERVER_DIR, WORKSPACE } from './paths.ts';
+import { SERVER_DIR } from './paths.ts';
+
+const DATA_DIR = join(tmpdir(), 'hive-smoke');
+const WORKSPACE = join(DATA_DIR, 'workspace');
 
 interface State { tasks: Record<string, TaskSpec>; taskState: Record<string, TaskState>; sessions: Record<string, SessionView>; steps: Step[]; chat: ChatMessage[] }
 
@@ -23,7 +28,7 @@ const base = `http://localhost:${port}/api`;
 rmSync(DATA_DIR, { recursive: true, force: true });
 const child = spawn(process.execPath, ['--import', 'tsx', 'index.ts'], {
   cwd: SERVER_DIR,
-  env: { ...process.env, LLM_PROVIDER: 'fake', FAKE_DELAY_MS: '20', PORT: String(port), MAX_PARALLEL: '2', MAX_STEPS: '20', SUPABASE_URL: '', SUPABASE_ANON_KEY: '', MONGODB_URI: '', GITHUB_REMOTE: '', GITHUB_TOKEN: '' },
+  env: { ...process.env, HIVE_DATA_DIR: DATA_DIR, LLM_PROVIDER: 'fake', FAKE_DELAY_MS: '20', PORT: String(port), MAX_PARALLEL: '2', MAX_STEPS: '20', SUPABASE_URL: '', SUPABASE_ANON_KEY: '', MONGODB_URI: '', GITHUB_REMOTE: '', GITHUB_TOKEN: '' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let log = '';

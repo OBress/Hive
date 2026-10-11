@@ -10,6 +10,7 @@ import { initModels } from './llm.ts';
 import { initMongo } from './mongo.ts';
 import { DATA_DIR, DOC_FILE } from './paths.ts';
 import { errorHandler, routes } from './routes.ts';
+import { getEpoch, initEpoch, settings } from './settings.ts';
 import { recover, watchTasks } from './session.ts';
 import { ensureWorkspace } from './workspace.ts';
 
@@ -22,6 +23,7 @@ const save = () => writeFileSync(DOC_FILE, Y.encodeStateAsUpdate(getDoc()));
 function loadInto(doc: Y.Doc) {
   if (existsSync(DOC_FILE)) {
     Y.applyUpdate(doc, readFileSync(DOC_FILE));
+    initEpoch(false);
     console.log('Loaded data/doc.bin');
     return;
   }
@@ -29,6 +31,7 @@ function loadInto(doc: Y.Doc) {
   doc.transact(() => {
     for (const t of seed.tasks as TaskSpec[]) tasks.set(t.id, t);
   }, 'server');
+  initEpoch(true);
   console.log('Loaded shared/seed.json');
 }
 
@@ -41,7 +44,7 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return void res.sendStatus(204);
   next();
 });
-app.use('/api', authMiddleware, routes);
+app.use('/api', authMiddleware, settings, routes);
 app.use(errorHandler);
 
 const server = new Server({
@@ -51,7 +54,7 @@ const server = new Server({
     if (documentName !== DOC_NAME) throw new Error(`Unknown document ${documentName}`);
     loadInto(document);
   },
-  onAuthenticate: wsAuthenticate,
+  onAuthenticate: (data) => wsAuthenticate(data, getEpoch()),
   // Our direct connection keeps the doc loaded, so Hocuspocus's own shutdown would wait forever.
   stopOnSignals: false,
   // Hand plain HTTP requests to Express; rejecting with null skips Hocuspocus's default response.

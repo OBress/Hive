@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'vitest';
 import type { NextFunction, Request, Response } from 'express';
-import { authMiddleware, setVerifier } from './auth.ts';
+import { authMiddleware, setVerifier, wsAuthenticate } from './auth.ts';
 
 const ana = { id: 'u1', login: 'ana-gh', name: 'Ana', avatarUrl: '', githubId: '42' };
 
@@ -39,4 +39,13 @@ test('with auth off the body name is used', async () => {
   const r = await call('POST', { by: 'Ana' });
   expect(r.next).toBe(true);
   expect(r.body).toEqual({ by: 'Ana' });
+});
+
+test('websocket: a tab from an older doc epoch is refused; auth checks the access token', async () => {
+  const tok = (epoch: string, access = '') => ({ token: JSON.stringify({ epoch, access }) });
+  await expect(wsAuthenticate(tok('old'), 'new')).rejects.toEqual({ reason: 'stale-epoch' });
+  await expect(wsAuthenticate(tok('new'), 'new')).resolves.toEqual({});
+  setVerifier(async (t) => (t === 'good' ? ana : null));
+  await expect(wsAuthenticate(tok('new', 'bad'), 'new')).rejects.toEqual({ reason: 'sign-in-required' });
+  await expect(wsAuthenticate(tok('new', 'good'), 'new')).resolves.toEqual({ user: ana });
 });

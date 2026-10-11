@@ -61,10 +61,19 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
   next();
 }
 
-// Hocuspocus onAuthenticate: reject unknown users when auth is on; the user rides on the connection context.
-export async function wsAuthenticate({ token }: { token: string }) {
+// Hocuspocus onAuthenticate. The token is JSON {epoch, access}: a tab from an older doc epoch is refused
+// (so it can't merge a stale doc into a fresh one), and when auth is on the access token must be valid.
+export async function wsAuthenticate({ token }: { token: string }, currentEpoch: string) {
+  let epoch = '';
+  let access = token ?? '';
+  try {
+    const t = JSON.parse(token) as { epoch?: string; access?: string };
+    epoch = t.epoch ?? '';
+    access = t.access ?? '';
+  } catch { /* a plain access token */ }
+  if (epoch && epoch !== currentEpoch) throw { reason: 'stale-epoch' };
   if (!authEnabled()) return {};
-  const user = await verifyToken(token);
-  if (!user) throw new Error('Sign in required');
+  const user = await verifyToken(access);
+  if (!user) throw { reason: 'sign-in-required' };
   return { user };
 }

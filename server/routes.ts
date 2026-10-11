@@ -8,6 +8,7 @@ import { chat, summarize } from './planner.ts';
 import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, takeover } from './session.ts';
 import { WORKSPACE } from './paths.ts';
 import { runTests } from './runner.ts';
+import { pushRemote } from './settings.ts';
 import { head, listFiles, readFile, safePath } from './workspace.ts';
 
 // Required string fields from the body (400 if missing).
@@ -97,11 +98,12 @@ routes.post('/chat', (req, res) => {
   res.status(202).json({ id: msg.id });
 });
 
-// Test main; if green, push it to GitHub with the approver's token (else GITHUB_TOKEN, else not at all).
+// Test main; if green, push it to the repo set on Overview (else GITHUB_REMOTE) with the approver's token
+// (else GITHUB_TOKEN, else not at all).
 routes.post('/approve', async (req, res) => {
   const { by } = need(req, 'by');
   const token: string | undefined = res.locals.githubToken || process.env.GITHUB_TOKEN || undefined;
-  const remote = process.env.GITHUB_REMOTE?.trim() ?? '';
+  const remote = pushRemote();
   const result = await withRepoLock(async () => {
     const r = await runTests(WORKSPACE);
     if (r.failed > 0 || r.passed === 0) {
