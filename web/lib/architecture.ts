@@ -1,155 +1,223 @@
 'use client';
 
-// PLACEHOLDER architecture map for the Architecture page: a ComfyUI-style node graph of the
-// whole system. Sockets are typed; wires only connect matching types. Positions and edits live
-// in module state for the session (move to the Y.Doc later if it should be shared).
+// The Architecture page: Hive as it is built, one node per real part of the repo (server/ modules and the
+// services they call). The wiring is fixed; each node's status and numbers come live from the running server
+// (GET /api/health, GET /api/env) and this tab's websocket, so the map shows what is on, off or down right now.
 
 import type { Edge, Node } from '@xyflow/react';
+import { isSet, type EnvStatus, type ServerHealth } from './system';
 
-export type Wire = 'https' | 'static' | 'ws' | 'sql' | 'token' | 'egress' | 'git';
-export type Health = 'live' | 'mock' | 'planned';
-export type Zone = 'edge' | 'app' | 'data' | 'external';
+export type Wire = 'http' | 'ws' | 'auth' | 'call' | 'store' | 'git' | 'llm' | 'proc';
+export type Health = 'live' | 'mock' | 'off' | 'down' | 'wait';
+export type Zone = 'client' | 'server' | 'data' | 'external';
 
 export const WIRES: Record<Wire, { color: string; label: string }> = {
-  https:  { color: '#2563eb', label: 'HTTPS / HTTP' },
-  static: { color: '#ff5c1a', label: 'Static assets' },
-  ws:     { color: '#a855f7', label: 'WebSocket' },
-  sql:    { color: '#22c55e', label: 'Storage' },
-  token:  { color: '#eab308', label: 'Auth token' },
-  egress: { color: '#ec4899', label: 'Outbound (egress)' },
-  git:    { color: '#f5efe4', label: 'Git' },
+  http:  { color: '#2563eb', label: 'HTTP' },
+  ws:    { color: '#a855f7', label: 'WebSocket (Yjs)' },
+  auth:  { color: '#eab308', label: 'Sign-in / token' },
+  call:  { color: '#38bdf8', label: 'In-process call' },
+  store: { color: '#22c55e', label: 'Storage' },
+  git:   { color: '#f5efe4', label: 'Git' },
+  llm:   { color: '#ec4899', label: 'LLM request' },
+  proc:  { color: '#ff5c1a', label: 'Child process' },
 };
 
 export const ZONES: Record<Zone, { label: string; color: string }> = {
-  edge:     { label: 'Edge', color: '#2563eb' },
-  app:      { label: 'App', color: '#ff5c1a' },
-  data:     { label: 'Data', color: '#22c55e' },
-  external: { label: 'External', color: '#a855f7' },
+  client:   { label: 'Browser', color: '#2563eb' },
+  server:   { label: 'server/ · Node on :4000', color: '#ff5c1a' },
+  data:     { label: 'Disk · data/', color: '#22c55e' },
+  external: { label: 'External services', color: '#a855f7' },
 };
 
 export interface Port { id: string; label: string; type: Wire }
 
-export type ArchData = {
-  title: string; kind: string; zone: Zone; glyph: string; health: Health;
+// What never changes about a node (from the code), and what the server tells us (Live).
+export type ArchDef = {
+  title: string; kind: string; zone: Zone; glyph: string;
   ins: Port[]; outs: Port[];
-  widgets: [string, string][];
-  about: string; files?: string[];
+  about: string; files: string[]; env: string[];
 };
-
+export type Live = { health: Health; kind?: string; widgets: [string, string][] };
+export type ArchData = ArchDef & Live;
 export type ZoneData = { label: string; color: string };
 
 export type ArchNode = Node<ArchData, 'arch'>;
 export type ZoneNode = Node<ZoneData, 'zone'>;
 export type AnyNode = ArchNode | ZoneNode;
 
-const n = (id: string, x: number, y: number, data: ArchData): ArchNode => ({ id, type: 'arch', position: { x, y }, data });
 const p = (id: string, label: string, type: Wire): Port => ({ id, label, type });
 
-const zone = (id: Zone, x: number, y: number, w: number, h: number): ZoneNode => ({
-  id: `zone-${id}`, type: 'zone', position: { x, y }, data: ZONES[id],
-  style: { width: w, height: h }, draggable: false, selectable: false, zIndex: -1,
-});
+export const DEFS: Record<string, ArchDef & { x: number; y: number }> = {
+  web: { x: 0, y: 330, title: 'Web app', kind: 'Next.js 16 · client-only SPA', zone: 'client', glyph: '▣',
+    ins: [], outs: [p('rest', 'REST /api', 'http'), p('sync', 'Y.Doc sync', 'ws'), p('login', 'GitHub sign-in', 'auth')],
+    about: 'Every page (projects, overview, tasks, architecture, environment) runs in the browser. It writes only the tasks map of the Y.Doc; everything else goes through REST and comes back through the doc.',
+    files: ['web/lib/hive.ts', 'web/lib/auth.ts', 'web/lib/projects.ts', 'web/components/Graph.tsx'], env: [] },
 
-export const TEMPLATES: ArchData[] = [
-  { title: 'Cache', kind: 'Redis', zone: 'data', glyph: '⚡', health: 'planned', ins: [p('in', 'get / set', 'sql')], outs: [], widgets: [['ttl', '60 s'], ['eviction', 'LRU']], about: 'Hot reads (redirect lookups) without touching the main store.' },
-  { title: 'Queue', kind: 'Job queue', zone: 'app', glyph: '☰', health: 'planned', ins: [p('in', 'enqueue', 'https')], outs: [p('out', 'jobs', 'https')], widgets: [['workers', '2'], ['retries', '1']], about: 'Moves Builder runs off the request path and caps concurrency.' },
-  { title: 'Object storage', kind: 'S3-compatible', zone: 'data', glyph: '▤', health: 'planned', ins: [p('in', 'put / get', 'sql')], outs: [p('out', 'files', 'static')], widgets: [['bucket', 'hive-artifacts']], about: 'Published sites, build artifacts and doc snapshots.' },
-  { title: 'Monitoring', kind: 'Logs + metrics', zone: 'external', glyph: '◎', health: 'planned', ins: [p('in', 'telemetry', 'egress')], outs: [], widgets: [['retention', '7 d']], about: 'Request logs, agent latency and token spend.' },
-];
+  api: { x: 400, y: 0, title: 'REST API', kind: 'Express 5', zone: 'server', glyph: '⌘',
+    ins: [p('rest', '/api/*', 'http')],
+    outs: [p('verify', 'check token', 'auth'), p('start', 'start · steer · takeover', 'call'), p('chat', 'chat', 'call'),
+      p('store', 'projects · users', 'store'), p('git', 'files · approve', 'git'), p('repo', 'create repo', 'http')],
+    about: 'Every endpoint that starts work returns 202 and the result arrives through the Y.Doc. Runs each request inside its project (inProject) and verifies the Supabase token on writes.',
+    files: ['server/routes.ts', 'server/auth.ts', 'server/projects.ts', 'server/settings.ts', 'server/github.ts'], env: ['PORT', 'GITHUB_TOKEN', 'GITHUB_REMOTE'] },
+  rt: { x: 400, y: 560, title: 'Realtime sync', kind: 'Hocuspocus + Yjs', zone: 'server', glyph: '⟳',
+    ins: [p('sync', 'websocket', 'ws'), p('write', 'serverWrite()', 'call')], outs: [p('store', 'doc every 2 s', 'store')],
+    about: 'One Y.Doc per project (tasks, taskState, sessions, live, terminal, steps, chat). Browsers write tasks; the server writes the rest inside serverWrite().',
+    files: ['server/index.ts', 'server/doc.ts'], env: [] },
 
-export const INITIAL_NODES: AnyNode[] = [
-  zone('edge', -40, -70, 650, 720),
-  zone('app', 650, -70, 640, 900),
-  zone('data', 1330, -70, 330, 900),
-  zone('external', 1700, -70, 620, 720),
+  session: { x: 760, y: 0, title: 'Agent sessions', kind: 'Scheduler + step loop', zone: 'server', glyph: '⚙',
+    ins: [p('start', 'start · steer', 'call')],
+    outs: [p('llm', 'next step', 'llm'), p('doc', 'steps · state', 'call'), p('git', 'commit each write', 'git'),
+      p('tests', 'run tests', 'proc'), p('search', 'search files', 'http'), p('store', 'transcripts', 'store')],
+    about: 'Starts ready tasks (MAX_PARALLEL at a time), runs one agent step at a time, applies steering at the next step, pauses for takeover and resumes on handback.',
+    files: ['server/session.ts', 'server/agent.ts', 'server/graph.ts'], env: ['MAX_PARALLEL', 'MAX_STEPS', 'AGENT_MODEL'] },
+  planner: { x: 760, y: 560, title: 'Planner + goal check', kind: 'Chat, summaries, follow-ups', zone: 'server', glyph: '✎',
+    ins: [p('chat', 'chat', 'call')],
+    outs: [p('llm', 'reply / judge', 'llm'), p('doc', 'graph ops · replies', 'call'), p('shot', 'screenshot', 'proc'), p('tests', 'test main', 'proc')],
+    about: 'Turns chat into graph edits or cited answers and writes hand-off summaries. When every task is done (Semi-auto / Auto) it tests main, screenshots the app and may add follow-up tasks.',
+    files: ['server/planner.ts', 'server/verify.ts', 'shared/layout.ts'], env: ['PLANNER_MODEL', 'VISION_MODEL'] },
 
-  n('users', 0, 210, { title: 'Users', kind: 'Browsers', zone: 'edge', glyph: '☺', health: 'live',
-    ins: [], outs: [p('req', 'requests', 'https')],
-    widgets: [['who', 'Ana · Ben · Cal'], ['identity', '?name=']],
-    about: 'People in separate browser windows. Each window is one Hocuspocus client and one presence avatar.' }),
-  n('cdn', 300, 20, { title: 'CDN', kind: 'Edge cache', zone: 'edge', glyph: '◈', health: 'planned',
-    ins: [p('in', 'requests', 'https')], outs: [p('assets', 'assets', 'static'), p('origin', 'origin', 'https')],
-    widgets: [['cache', 'JS / CSS / fonts'], ['ttl', '1 h']],
-    about: 'Serves the built web bundle and caches published sites. On the demo laptop this is skipped: Next serves directly.' }),
-  n('proxy', 300, 360, { title: 'Reverse proxy', kind: 'TLS + routing', zone: 'edge', glyph: '⇆', health: 'planned',
-    ins: [p('in', 'origin', 'https')], outs: [p('api', '/api', 'https'), p('ws', '/ws', 'ws'), p('login', '/auth', 'https')],
-    widgets: [['tls', 'on'], ['routes', '/api · /ws · /site']],
-    about: 'Terminates TLS and routes /api to Express and websocket upgrades to Hocuspocus. Today the browser talks to :4000 directly.' }),
+  runner: { x: 1120, y: 130, title: 'Test runner', kind: 'node --test (TAP)', zone: 'server', glyph: '✓',
+    ins: [p('run', 'run', 'proc')], outs: [p('box', 'remote exec', 'http')],
+    about: 'Runs agent-written tests and CLI commands with a stripped environment (PATH and HOME, no keys). With Daytona on, they run in the sandbox instead.',
+    files: ['server/runner.ts'], env: [] },
+  preview: { x: 1120, y: 600, title: 'Preview', kind: 'Headless Chrome / Edge', zone: 'server', glyph: '◉',
+    ins: [p('shot', 'screenshot', 'proc')], outs: [p('box', 'serve in sandbox', 'http')],
+    about: 'Starts src/server.js (or opens src/index.html) from main and screenshots it with the browser already on this machine, for the goal check and live task previews.',
+    files: ['server/preview.ts'], env: ['CHROME_PATH'] },
 
-  n('web', 700, 0, { title: 'Frontend', kind: 'Next.js 16 SPA', zone: 'app', glyph: '▣', health: 'live',
-    ins: [p('assets', 'bundle', 'static')], outs: [],
-    widgets: [['port', '5173'], ['pages', 'overview · tasks · arch']],
-    about: 'Client-only React app: task graph, task panel, chat, overview and this page. Reads everything from the shared Y.Doc.',
-    files: ['web/app/page.tsx', 'web/components/Graph.tsx', 'web/lib/hive.ts'] }),
-  n('auth', 700, 380, { title: 'Auth', kind: 'Identity', zone: 'app', glyph: '⚿', health: 'mock',
-    ins: [p('login', 'login', 'https')], outs: [p('token', 'session', 'token')],
-    widgets: [['demo', '?name= in URL'], ['later', 'OAuth + roles']],
-    about: 'For the demo, identity is just ?name=. A real deployment adds OAuth sign-in and per-project roles.' }),
-  n('api', 1010, 160, { title: 'Backend API', kind: 'Express 5', zone: 'app', glyph: '⌘', health: 'live',
-    ins: [p('http', '/api', 'https'), p('token', 'session', 'token')],
-    outs: [p('store', 'doc', 'sql'), p('git', 'repo', 'git'), p('llm', 'LLM calls', 'egress')],
-    widgets: [['port', '4000'], ['routes', 'chat · run · resolve · push'], ['agents', 'Planner · Builder']],
-    about: 'Starts work and returns 202: runs the Planner on chat, schedules Builder runs (max 2), merges branches, resolves conflicts and pushes.',
-    files: ['server/index.ts', 'server/planner.ts', 'server/builder.ts', 'server/graph.ts'] }),
-  n('rt', 1010, 560, { title: 'Realtime sync', kind: 'Hocuspocus + Yjs', zone: 'app', glyph: '⟳', health: 'live',
-    ins: [p('ws', '/ws', 'ws'), p('token', 'session', 'token')], outs: [p('store', 'persist', 'sql')],
-    widgets: [['doc', '"hive"'], ['save', 'every 2 s']],
-    about: 'One Y.Doc holds tasks, runs, chat, conflicts and decisions. Browsers write tasks; the server writes the rest.' }),
+  git: { x: 1500, y: 40, title: 'Git workspace', kind: 'workspace/ + worktrees/', zone: 'data', glyph: '⑂',
+    ins: [p('git', 'commits · merge', 'git')], outs: [p('push', 'push main', 'git')],
+    about: 'Each project has a real repo. Every task works in its own worktree on task/<id>; finished tasks merge into main under a repo lock. Agents commit as "Hive Agent", people under their own name.',
+    files: ['server/workspace.ts', 'server/git.ts', 'server/workspace-template/'], env: [] },
+  storage: { x: 1500, y: 560, title: 'Storage', kind: 'files', zone: 'data', glyph: '⛁',
+    ins: [p('store', 'read / write', 'store')], outs: [],
+    about: 'Project list, each Y.Doc, agent transcripts, users and the doc epoch. Files under data/ by default; MongoDB when MONGODB_URI is set (the git folders stay on disk either way).',
+    files: ['server/store.ts', 'server/mongo.ts', 'server/paths.ts', 'server/users.ts'], env: ['MONGODB_URI', 'MONGODB_DB'] },
 
-  n('db', 1370, 430, { title: 'Database', kind: 'doc.bin → Postgres', zone: 'data', glyph: '⛁', health: 'mock',
-    ins: [p('in', 'reads / writes', 'sql')], outs: [],
-    widgets: [['now', 'data/doc.bin'], ['later', 'Postgres + snapshots']],
-    about: 'The demo saves the encoded Y.Doc to a file. A hosted version stores per-project docs and history in Postgres.' }),
-  n('repo', 1370, 60, { title: 'Git workspace', kind: 'Local repo', zone: 'data', glyph: '⑂', health: 'live',
-    ins: [p('in', 'commits', 'git')], outs: [p('test', 'checkout', 'git'), p('push', 'push', 'egress')],
-    widgets: [['path', 'workspace/'], ['branches', 'task/<id>']],
-    about: 'A real git repo. One branch per task, merged into main in dependency order; conflicts open a card.' }),
-  n('tests', 1370, 700, { title: 'Test runner', kind: 'Sandboxed npm test', zone: 'data', glyph: '✓', health: 'live',
-    ins: [p('in', 'checkout', 'git')], outs: [],
-    widgets: [['env', 'PATH + HOME only'], ['timeout', '60 s']],
-    about: 'Runs node:test as a separate process with a stripped environment. Tests decide whether a merge proposal is applied.' }),
-
-  n('egress', 1760, 200, { title: 'Forward proxy', kind: 'Egress gateway', zone: 'external', glyph: '➜', health: 'planned',
-    ins: [p('in', 'outbound', 'egress')], outs: [p('llm', 'api.anthropic.com', 'egress'), p('gh', 'github.com', 'egress')],
-    widgets: [['allowlist', '2 hosts'], ['keys', 'injected here']],
-    about: 'All outbound traffic leaves through one allowlisted gateway, so generated code and agents can only reach the LLM and GitHub, and API keys never sit in app processes.' }),
-  n('claude', 2050, 40, { title: 'Claude API', kind: 'LLM', zone: 'external', glyph: '✦', health: 'live',
-    ins: [p('in', 'messages', 'egress')], outs: [],
-    widgets: [['planner', 'fast model'], ['builder', 'strong model']],
-    about: 'One call per chat message (Planner) and one per task (Builder), strict JSON, validated with one retry.' }),
-  n('github', 2050, 360, { title: 'GitHub', kind: 'Remote', zone: 'external', glyph: '⌥', health: 'mock',
-    ins: [p('in', 'push', 'egress')], outs: [],
-    widgets: [['when', 'Approve & push'], ['token', 'server .env']],
-    about: 'main is pushed only after a person approves and the full suite passes on main.' }),
-];
+  llm: { x: 1880, y: 0, title: 'LLM provider', kind: '…', zone: 'external', glyph: '✦',
+    ins: [p('in', 'messages', 'llm')], outs: [],
+    about: 'generate() streams from an OpenAI-compatible API (Luminal), Anthropic, or the scripted fake provider. Keys stay on the server.',
+    files: ['server/llm.ts'], env: ['LLM_PROVIDER', 'LLM_API_KEY', 'LLM_BASE_URL', 'ANTHROPIC_API_KEY'] },
+  opencode: { x: 1880, y: 250, title: 'OpenCode', kind: 'File search server', zone: 'external', glyph: '⌕',
+    ins: [p('in', 'find', 'http')], outs: [],
+    about: 'The agent searches a worktree with OpenCode\'s /find endpoint (no model). Runs inside the Daytona sandbox, or locally at OPENCODE_URL.',
+    files: ['server/opencode.ts'], env: ['OPENCODE_URL'] },
+  daytona: { x: 1880, y: 470, title: 'Daytona sandbox', kind: 'Remote code execution', zone: 'external', glyph: '▢',
+    ins: [p('in', 'exec · serve', 'http')], outs: [],
+    about: 'When set, agent code, tests and previews run in a Daytona sandbox; worktree files are mirrored in before each run. Off: they run on this machine.',
+    files: ['server/sandbox.ts'], env: ['DAYTONA_API_KEY', 'DAYTONA_API_URL', 'DAYTONA_TARGET'] },
+  github: { x: 1880, y: 690, title: 'GitHub', kind: 'Repos + push', zone: 'external', glyph: '⌥',
+    ins: [p('push', 'push', 'git'), p('repo', 'create repo', 'http')], outs: [],
+    about: 'New projects get a private repo; Approve tests main and pushes it with the approver\'s own GitHub token (or GITHUB_TOKEN).',
+    files: ['server/github.ts'], env: ['GITHUB_TOKEN', 'GITHUB_REMOTE'] },
+  supabase: { x: 1880, y: 930, title: 'Supabase Auth', kind: 'GitHub OAuth + approvals', zone: 'external', glyph: '⚿',
+    ins: [p('login', 'OAuth', 'auth'), p('verify', 'verify token', 'auth')], outs: [],
+    about: 'Used only for sign-in and the approved flag in public.profiles. Off: no sign-in, names come from ?name=.',
+    files: ['server/auth.ts', 'server/supabase-approvals.sql', 'web/lib/auth.ts'], env: ['SUPABASE_URL', 'SUPABASE_ANON_KEY'] },
+};
 
 const e = (source: string, sh: string, target: string, th: string): Edge => ({
   id: `${source}.${sh}->${target}.${th}`, source, target, sourceHandle: sh, targetHandle: th,
 });
 
-export const INITIAL_EDGES: Edge[] = [
-  e('users', 'req', 'cdn', 'in'),
-  e('cdn', 'assets', 'web', 'assets'),
-  e('cdn', 'origin', 'proxy', 'in'),
-  e('proxy', 'api', 'api', 'http'),
-  e('proxy', 'ws', 'rt', 'ws'),
-  e('proxy', 'login', 'auth', 'login'),
-  e('auth', 'token', 'api', 'token'),
-  e('auth', 'token', 'rt', 'token'),
-  e('api', 'store', 'db', 'in'),
-  e('rt', 'store', 'db', 'in'),
-  e('api', 'git', 'repo', 'in'),
-  e('repo', 'test', 'tests', 'in'),
-  e('api', 'llm', 'egress', 'in'),
-  e('repo', 'push', 'egress', 'in'),
-  e('egress', 'llm', 'claude', 'in'),
-  e('egress', 'gh', 'github', 'in'),
+export const EDGES: Edge[] = [
+  e('web', 'rest', 'api', 'rest'),
+  e('web', 'sync', 'rt', 'sync'),
+  e('web', 'login', 'supabase', 'login'),
+  e('api', 'verify', 'supabase', 'verify'),
+  e('api', 'start', 'session', 'start'),
+  e('api', 'chat', 'planner', 'chat'),
+  e('api', 'store', 'storage', 'store'),
+  e('api', 'git', 'git', 'git'),
+  e('api', 'repo', 'github', 'repo'),
+  e('rt', 'store', 'storage', 'store'),
+  e('session', 'llm', 'llm', 'in'),
+  e('session', 'doc', 'rt', 'write'),
+  e('session', 'git', 'git', 'git'),
+  e('session', 'tests', 'runner', 'run'),
+  e('session', 'search', 'opencode', 'in'),
+  e('session', 'store', 'storage', 'store'),
+  e('planner', 'llm', 'llm', 'in'),
+  e('planner', 'doc', 'rt', 'write'),
+  e('planner', 'shot', 'preview', 'shot'),
+  e('planner', 'tests', 'runner', 'run'),
+  e('runner', 'box', 'daytona', 'in'),
+  e('preview', 'box', 'daytona', 'in'),
+  e('git', 'push', 'github', 'push'),
+];
+
+export const ZONE_BOXES: { zone: Zone; x: number; y: number; w: number; h: number }[] = [
+  { zone: 'client', x: -40, y: -70, w: 340, h: 1240 },
+  { zone: 'server', x: 360, y: -70, w: 1060, h: 1240 },
+  { zone: 'data', x: 1460, y: -70, w: 340, h: 1240 },
+  { zone: 'external', x: 1840, y: -70, w: 340, h: 1240 },
+];
+
+const zoneNodes = (): ZoneNode[] => ZONE_BOXES.map(({ zone, x, y, w, h }) => ({
+  id: `zone-${zone}`, type: 'zone', position: { x, y }, data: ZONES[zone],
+  style: { width: w, height: h }, draggable: false, selectable: false, zIndex: -1,
+}));
+
+// Starting layout; each arch node's data is replaced by the live view when rendered.
+export const initialNodes = (): AnyNode[] => [
+  ...zoneNodes(),
+  ...Object.entries(DEFS).map(([id, { x, y, ...d }]): ArchNode => ({ id, type: 'arch', position: { x, y }, data: { ...d, health: 'wait', widgets: [] } })),
 ];
 
 // Session memory so switching pages keeps the layout.
-export const saved: { nodes: AnyNode[] | null; edges: Edge[] | null } = { nodes: null, edges: null };
+export const saved: { nodes: AnyNode[] | null } = { nodes: null };
 
-export function portType(node: AnyNode | undefined, handle: string | null | undefined, side: 'ins' | 'outs'): Wire | undefined {
-  if (!node || node.type !== 'arch' || !handle) return undefined;
-  return (node.data as ArchData)[side].find((x) => x.id === handle)?.type;
+export interface LiveInputs {
+  health: ServerHealth | null;
+  env: EnvStatus | null;
+  reachable: boolean | null;
+  socket: string;          // this tab's Hocuspocus status
+  me: string;
+  online: number;          // people on this project, including me
+  project: string;
+  server: string;          // host:port of the API
+}
+
+// Each node's status and numbers, from what the server reports right now.
+export function liveData(id: string, s: LiveInputs): Live {
+  const set = (n: string) => isSet(s.env, n);
+  const up: Health = s.reachable === null ? 'wait' : s.reachable ? 'live' : 'down';
+  const h = s.health;
+  const sandbox = set('DAYTONA_API_KEY');
+  const or = (v: string | undefined, d = '—') => v || d;
+  switch (id) {
+    case 'web': return { health: 'live', widgets: [['you', s.me], ['online', String(s.online)], ['server', s.server]] };
+    case 'api': return { health: up, widgets: [['address', s.server], ['projects', h ? String(h.projects) : '—'], ['sign-in', h ? (h.auth ? 'required' : 'off (?name=)') : '—']] };
+    case 'rt': return { health: s.socket === 'connected' ? 'live' : s.reachable === false ? 'down' : 'wait',
+      widgets: [['this tab', s.socket], ['doc', or(s.project, 'none open')], ['saved', set('MONGODB_URI') ? 'MongoDB · 2 s' : 'doc.bin · 2 s']] };
+    case 'session': return { health: up, widgets: [['agent', or(h?.models.agent)], ['parallel', set('MAX_PARALLEL') ? 'from .env' : '2'], ['max steps', set('MAX_STEPS') ? 'from .env' : '20']] };
+    case 'planner': return { health: up, widgets: [['model', or(h?.models.planner)], ['vision', set('VISION_MODEL') ? 'VISION_MODEL' : h?.provider === 'anthropic' ? 'planner' : 'text only']] };
+    case 'runner': return { health: up, widgets: [['runs on', sandbox ? 'Daytona' : 'this machine'], ['env', 'PATH + HOME only']] };
+    case 'preview': return { health: up, widgets: [['browser', sandbox ? 'in sandbox' : set('CHROME_PATH') ? 'CHROME_PATH' : 'auto-detected']] };
+    case 'git': return { health: up, widgets: [['main', 'workspace/'], ['tasks', 'worktrees/<id> · task/<id>']] };
+    case 'storage': {
+      const mongo = set('MONGODB_URI');
+      return { health: up, kind: mongo ? 'MongoDB' : 'Files under data/', widgets: [['backend', mongo ? 'MongoDB' : 'data/ files'], ['transcripts', mongo ? 'sessions collection' : 'sessions/<sid>.json']] };
+    }
+    case 'llm': {
+      if (!h) return { health: s.reachable === false ? 'down' : 'wait', widgets: [['provider', '—']] };
+      const kind = h.provider === 'anthropic' ? 'Anthropic' : h.provider === 'fake' ? 'Fake (scripted, no network)' : 'OpenAI-compatible (Luminal)';
+      const keyed = h.provider === 'fake' || (h.provider === 'anthropic' ? set('ANTHROPIC_API_KEY') : set('LLM_API_KEY') && set('LLM_BASE_URL'));
+      return { health: h.provider === 'fake' ? 'mock' : keyed && h.models.agent ? 'live' : 'down', kind,
+        widgets: [['provider', h.provider], ['agent', or(h.models.agent)], ['planner', or(h.models.planner)]] };
+    }
+    case 'opencode': return { health: !s.env ? 'wait' : sandbox || set('OPENCODE_URL') ? 'live' : 'off', widgets: [['where', sandbox ? 'in sandbox' : set('OPENCODE_URL') ? 'OPENCODE_URL' : 'not set']] };
+    case 'daytona': return { health: !s.env ? 'wait' : sandbox ? 'live' : 'off', widgets: [['status', sandbox ? 'agent code runs here' : 'off: runs locally']] };
+    case 'github': {
+      const on = !!h?.auth || set('GITHUB_TOKEN');
+      return { health: !h ? 'wait' : on ? 'live' : 'off', widgets: [['push token', h?.auth ? 'approver\'s own' : set('GITHUB_TOKEN') ? 'GITHUB_TOKEN' : 'none: local merge']] };
+    }
+    case 'supabase': return { health: !h ? 'wait' : h.auth ? 'live' : 'off', widgets: [['sign-in', h?.auth ? 'GitHub OAuth' : 'off']] };
+  }
+  return { health: 'wait', widgets: [] };
+}
+
+export function portType(data: ArchData | undefined, handle: string | null | undefined, side: 'ins' | 'outs'): Wire | undefined {
+  if (!data || !handle) return undefined;
+  return data[side].find((x) => x.id === handle)?.type;
 }

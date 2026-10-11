@@ -1,50 +1,60 @@
-// The variables Hive's server reads, by name only. Secret VALUES never reach the browser:
-// the Environment page shows set/missing from GET /api/env and can set a value with POST /api/env
+// The variables Hive's server reads (server/settings.ts ENV_NAMES), by name only. Secret VALUES never reach
+// the browser: the Environment page shows set/unset from GET /api/env and can set a value with POST /api/env
 // (write-only, accepted only from the machine running the server; most need a server restart).
+
+import type { EnvStatus, ServerHealth } from './system';
 
 export type EnvKind = 'secret' | 'config';
 
 export interface EnvVar {
   name: string;
   kind: EnvKind;
-  usedBy: string[];
+  group: string;
   about: string;
   example?: string;            // non-secret default, as in .env.example
-  source: 'env.example' | 'spec';
 }
 
+export const ENV_GROUPS = ['Model', 'Limits', 'GitHub', 'Sign-in', 'Storage', 'Sandbox', 'Goal check', 'Server'] as const;
+
 export const ENV_VARS: EnvVar[] = [
-  { name: 'LLM_PROVIDER', kind: 'config', usedBy: ['Agents', 'Planner'], source: 'env.example', example: 'openai',
-    about: 'openai = any OpenAI-compatible API (Luminal), anthropic, or fake (scripted agents, no key).' },
-  { name: 'LLM_API_KEY', kind: 'secret', usedBy: ['Agents', 'Planner'], source: 'env.example',
-    about: 'Luminal API key. Only the server reads it; never sent to web/, logs or the doc.' },
-  { name: 'LLM_BASE_URL', kind: 'config', usedBy: ['Agents', 'Planner'], source: 'env.example', example: 'https://<host>/v1',
-    about: 'Luminal API address. Only editable from the machine running the server.' },
-  { name: 'AGENT_MODEL', kind: 'config', usedBy: ['Agents'], source: 'env.example',
-    about: 'Blank: the server picks a DeepSeek model from the provider\'s model list.' },
-  { name: 'PLANNER_MODEL', kind: 'config', usedBy: ['Planner'], source: 'env.example',
-    about: 'Blank: a fast GLM Flash model for chat, catch-up answers and hand-off summaries.' },
-  { name: 'ANTHROPIC_API_KEY', kind: 'secret', usedBy: ['Agents', 'Planner'], source: 'env.example',
-    about: 'Only for LLM_PROVIDER=anthropic.' },
-  { name: 'MAX_PARALLEL', kind: 'config', usedBy: ['Scheduler'], source: 'env.example', example: '2',
-    about: 'Agents running at once.' },
-  { name: 'MAX_STEPS', kind: 'config', usedBy: ['Agents'], source: 'env.example', example: '20',
-    about: 'Steps per run before an agent pauses.' },
-  { name: 'GITHUB_REMOTE', kind: 'config', usedBy: ['Push'], source: 'env.example',
-    about: 'https://github.com/<owner>/<repo>.git. The repo connected on Overview takes precedence.' },
-  { name: 'GITHUB_TOKEN', kind: 'secret', usedBy: ['Push'], source: 'env.example',
-    about: 'Fallback push token (fine-grained, Contents read/write). Signed-in approvers push with their own GitHub token.' },
-  { name: 'SUPABASE_URL', kind: 'config', usedBy: ['Sign-in'], source: 'env.example',
-    about: 'Supabase project URL. Blank turns sign-in off.' },
-  { name: 'SUPABASE_ANON_KEY', kind: 'config', usedBy: ['Sign-in'], source: 'env.example',
-    about: 'The project\'s anon (public) key; the browser gets it from the server.' },
-  { name: 'MONGODB_URI', kind: 'secret', usedBy: ['History'], source: 'env.example',
-    about: 'Optional MongoDB mirror of steps and chat. Blank = off.' },
-  { name: 'PORT', kind: 'config', usedBy: ['Server'], source: 'env.example', example: '4000',
-    about: 'Express + Hocuspocus port.' },
+  { name: 'LLM_PROVIDER', kind: 'config', group: 'Model', example: 'openai', about: 'openai (any OpenAI-compatible API, e.g. Luminal), anthropic, or fake (scripted, no key).' },
+  { name: 'LLM_API_KEY', kind: 'secret', group: 'Model', about: 'Key for the OpenAI-compatible provider.' },
+  { name: 'LLM_BASE_URL', kind: 'config', group: 'Model', example: 'https://<host>/v1', about: 'OpenAI-compatible API address.' },
+  { name: 'AGENT_MODEL', kind: 'config', group: 'Model', about: 'Blank: a DeepSeek model from the provider\'s list (Sonnet with anthropic).' },
+  { name: 'PLANNER_MODEL', kind: 'config', group: 'Model', about: 'Blank: a fast GLM Flash model (Haiku with anthropic).' },
+  { name: 'ANTHROPIC_API_KEY', kind: 'secret', group: 'Model', about: 'Only for LLM_PROVIDER=anthropic.' },
+  { name: 'MAX_PARALLEL', kind: 'config', group: 'Limits', example: '2', about: 'Agents running at once.' },
+  { name: 'MAX_STEPS', kind: 'config', group: 'Limits', example: '20', about: 'Steps per session before an agent pauses.' },
+  { name: 'GITHUB_REMOTE', kind: 'config', group: 'GitHub', about: 'Fallback push target; a project\'s own repo wins.' },
+  { name: 'GITHUB_TOKEN', kind: 'secret', group: 'GitHub', about: 'Fallback push token; signed-in people push with their own.' },
+  { name: 'SUPABASE_URL', kind: 'config', group: 'Sign-in', about: 'Supabase project URL. Blank turns sign-in off.' },
+  { name: 'SUPABASE_ANON_KEY', kind: 'config', group: 'Sign-in', about: 'Public anon key; the browser gets it from /api/config.' },
+  { name: 'MONGODB_URI', kind: 'secret', group: 'Storage', about: 'Blank: files under data/. Set: projects, docs and history in MongoDB.' },
+  { name: 'MONGODB_DB', kind: 'config', group: 'Storage', about: 'Blank: the database in the URI path, else "hive".' },
+  { name: 'DAYTONA_API_KEY', kind: 'secret', group: 'Sandbox', about: 'Set: agent code and tests run in a Daytona sandbox.' },
+  { name: 'DAYTONA_API_URL', kind: 'config', group: 'Sandbox', about: 'Blank: https://app.daytona.io/api.' },
+  { name: 'DAYTONA_TARGET', kind: 'config', group: 'Sandbox', about: 'Blank: the account\'s default region.' },
+  { name: 'OPENCODE_URL', kind: 'config', group: 'Sandbox', about: 'Local OpenCode server for file search (not needed with Daytona).' },
+  { name: 'CHROME_PATH', kind: 'config', group: 'Goal check', about: 'Blank: Chrome or Edge found in the usual places.' },
+  { name: 'VISION_MODEL', kind: 'config', group: 'Goal check', about: 'A model that can read screenshots (the anthropic planner already can).' },
+  { name: 'PORT', kind: 'config', group: 'Server', example: '4000', about: 'Express + Hocuspocus port.' },
 ];
 
-export type EnvStatus = Record<string, { set: boolean }>;
+// Variables the server can't work without, given the provider it is running with.
+export function needed(v: EnvVar, health: ServerHealth | null): boolean {
+  const p = health?.provider;
+  if (p === 'openai') return v.name === 'LLM_API_KEY' || v.name === 'LLM_BASE_URL';
+  if (p === 'anthropic') return v.name === 'ANTHROPIC_API_KEY';
+  return false;
+}
+
+// Every name the server reports, in the order above; any new server name we don't describe yet goes last.
+export function allVars(status: EnvStatus | null): EnvVar[] {
+  const known = new Set(ENV_VARS.map((v) => v.name));
+  const extra = Object.keys(status ?? {}).filter((n) => !known.has(n))
+    .map((name): EnvVar => ({ name, kind: /KEY|TOKEN|SECRET|PASSWORD|URI/.test(name) ? 'secret' : 'config', group: 'Server', about: 'Read by the server.' }));
+  return [...ENV_VARS, ...extra];
+}
 
 // .env template text: names, non-secret defaults, empty secrets.
 export function envTemplate(vars: EnvVar[]): string {

@@ -3,9 +3,9 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { WIRES, type ArchNode as ArchNodeType, type Port, type ZoneNode } from '@/lib/architecture';
 
-const HEALTH_LABEL = { live: 'Live', mock: 'Mock', planned: 'Planned' } as const;
+export const HEALTH_LABEL = { live: 'Live', mock: 'Fake', off: 'Off', down: 'Down', wait: '…' } as const;
 
-// ComfyUI-style node: title bar, typed sockets on the sides (inputs left, outputs right), widget rows.
+// ComfyUI-style node: title bar, typed sockets on the sides (inputs left, outputs right), live value rows.
 export function ArchNode({ data, selected }: NodeProps<ArchNodeType>) {
   const rows = Math.max(data.ins.length, data.outs.length);
   return (
