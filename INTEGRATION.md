@@ -25,6 +25,7 @@ One Y.Doc per project, **named by the project id**, synced by Hocuspocus at `ws:
 | `taskState` (map) | `TaskState` by task id | server only | status, owner, sessionId, lastTest, note |
 | `sessions` (map) | `SessionView` by session id | server only | state, summary, stepCount |
 | `live` (map) | `string` by session id | server only | the text the agent is typing right now (updates every 150 ms, deleted when the call ends) |
+| `terminal` (map) | `TerminalView` by task id | server only | the latest command run in that task's folder (tests, or its CLI): `cmd`, `output` streaming every 200 ms, `running`, `exitCode` |
 | `steps` (array) | `Step` | server only, append-only | the feed: plans, reads, edits (with diff), tests, steers, takeovers, merges... |
 | `chat` (array) | `ChatMessage` | server only | team chat and Planner replies (with `cites` step ids) |
 
@@ -63,6 +64,9 @@ When auth is on (see below), `by`/`from` in bodies are ignored and replaced by t
 | GET /api/tasks/:id/summary | | `{summary, stepIds}` (regenerated) |
 | POST /api/chat | `{from, text}` | 202 `{id}`; Planner reply appears in `chat` (may also edit `tasks`) |
 | GET /api/history?taskId=stats | | `{steps: Step[], source: "mongo" \| "doc"}` |
+| GET /api/preview | | `Preview` for main: `{kind: 'web', how, url}` (iframe it with `sandbox="allow-scripts allow-forms"`), `{kind: 'cli'}` or `{kind: 'none', why}`. A `server.js` app is restarted on its next request after a commit, so ask again after edit steps |
+| GET /api/tasks/:id/preview | | `Preview` for a task's folder (main's until it has one) |
+| POST /api/tasks/:id/cli | `{by, args?}` | 202; runs `node src/cli.js <args>` in the task's folder. Output streams to `terminal[id]`, then a `run` step. 409 if there is no `src/cli.js` |
 | POST /api/approve | `{by}` | `{ok: true, commit, pushed, url, pushError?}`; 409 `{ok: false, error, output}` if tests fail on main |
 | GET /api/config | | `{auth, supabaseUrl?, supabaseAnonKey?, epoch}`: what the browser needs before connecting (the anon key is public) |
 | GET /api/env | | `{NAME: {set: boolean}}` for every server variable; never values |

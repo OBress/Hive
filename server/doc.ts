@@ -1,6 +1,8 @@
 import * as Y from 'yjs';
-import { ARRAYS, MAPS, type ChatMessage, type SessionView, type Step, type TaskSpec, type TaskState } from '@hive/shared/types';
-import { projectDoc } from './projects.ts';
+import {
+  ARRAYS, MAPS, type ChatMessage, type SessionView, type Step, type TaskSpec, type TaskState, type TerminalView,
+} from '@hive/shared/types';
+import { currentId, projectDoc } from './projects.ts';
 
 // The current project's Hocuspocus-managed doc, kept loaded by the server's direct connection (see index.ts).
 export const getDoc = (): Y.Doc => projectDoc();
@@ -9,6 +11,7 @@ export const tasks = () => getDoc().getMap<TaskSpec>(MAPS.tasks);
 export const taskState = () => getDoc().getMap<TaskState>(MAPS.taskState);
 export const sessions = () => getDoc().getMap<SessionView>(MAPS.sessions);
 export const live = () => getDoc().getMap<string>(MAPS.live);
+export const terminal = () => getDoc().getMap<TerminalView>(MAPS.terminal);
 export const steps = () => getDoc().getArray<Step>(ARRAYS.steps);
 export const chat = () => getDoc().getArray<ChatMessage>(ARRAYS.chat);
 
@@ -43,7 +46,7 @@ export const mirrors: { step?: (s: Step) => void; chat?: (m: ChatMessage) => voi
 
 export function addStep(s: Omit<Step, 'id' | 'n' | 'at'>): Step {
   const n = steps().length + 1;
-  const step = clean({ ...s, id: `st_${n}`, n, at: now(), diff: s.diff ? trim(s.diff, 4000) : undefined } as Step);
+  const step = clean({ ...s, id: `st_${n}`, n, at: now(), diff: s.diff ? trim(s.diff, 4000) : undefined, output: s.output?.slice(-2000) } as Step);
   serverWrite(() => steps().push([step]));
   mirrors.step?.(step);
   return step;
@@ -60,4 +63,31 @@ export function addChat(m: Omit<ChatMessage, 'id' | 'at'>): ChatMessage {
 // Every task in `tasks` gets a TaskState.
 export function syncTaskStates() {
   for (const id of tasks().keys()) if (!taskState().has(id)) setTaskState(id, {});
+}
+
+// Stream a command's output into terminal[taskId] every 200 ms, so everyone watches it run. A newer run in the
+// same task takes the slot over; the older one stops writing.
+const termRuns = new Map<string, number>();
+let termN = 0;
+export function openTerminal(taskId: string, by: string, cmd: string) {
+  const doc = getDoc();
+  const k = `${currentId()}/${taskId}`;
+  const n = ++termN;
+  termRuns.set(k, n);
+  const view: TerminalView = { taskId, by, cmd, output: '', running: true, at: now() };
+  let timer: NodeJS.Timeout | undefined;
+  const flush = () => {
+    timer = undefined;
+    if (termRuns.get(k) === n) doc.transact(() => doc.getMap<TerminalView>(MAPS.terminal).set(taskId, clean({ ...view })), 'server');
+  };
+  flush();
+  return {
+    write: (chunk: string) => { view.output = (view.output + chunk).slice(-8000); timer ??= setTimeout(flush, 200); },
+    end: (exitCode: number) => {
+      clearTimeout(timer);
+      Object.assign(view, { running: false, exitCode, at: now() });
+      flush();
+      if (termRuns.get(k) === n) termRuns.delete(k);
+    },
+  };
 }

@@ -77,7 +77,7 @@ Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and 
 ## Architecture invariants
 
 - **Projects:** Hive holds a list of projects; each has its own Y.Doc (named by the project id), workspace, worktrees, sessions and push repo under `data/projects/<id>/`. REST for one project lives under `/api/projects/:project/...`; server code runs inside that project's context (`inProject`), so `tasks()`, `workspaceDir()` and friends resolve to it. Agent loops keep the context they were started in.
-- **One Y.Doc per project** holds that project's live state, synced by Hocuspocus. Keys: maps `tasks`, `taskState`, `sessions`, `live`; arrays `steps`, `chat`.
+- **One Y.Doc per project** holds that project's live state, synced by Hocuspocus. Keys: maps `tasks`, `taskState`, `sessions`, `live`, `terminal`; arrays `steps`, `chat`.
 - **Browsers write only `tasks`** (create, edit `title`/`spec`/`deps`/`x`/`y`/`editedBy`/`why`, delete). Everything else is server-only; browsers act through REST.
 - **The server writes inside `serverWrite(fn)`** (`doc.transact(fn, 'server')`). Observers ignore origin `'server'`. Store plain JSON only (`clean()` strips `undefined`).
 - Server code reads the doc only through `server/doc.ts` (the Hocuspocus-managed instance kept loaded by a direct connection). Never construct a separate `Y.Doc`.
@@ -130,6 +130,8 @@ The rows below are per project: prefix them with `/api/projects/:project` (e.g. 
 | GET /api/tasks/:id/summary | | `{summary, stepIds}` |
 | POST /api/chat | `{from, text}` | Planner reply appended to chat |
 | GET /api/history?taskId= | | Steps for a task |
+| GET /api/preview, /api/tasks/:id/preview | | `Preview`: web URL to iframe, cli, or none |
+| POST /api/tasks/:id/cli | `{by, args?}` | Run `node src/cli.js`; output in `terminal` |
 | POST /api/approve | `{by}` | Test main, push to GitHub |
 | POST /api/repo | `{repo}` | Set this project's push target (owner/repo) |
 | POST /api/share, /api/unshare | `{login, by}` | Add or remove a person (must have signed in once) |

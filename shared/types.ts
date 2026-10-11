@@ -66,7 +66,8 @@ export type StepKind =
   | 'plan' | 'read' | 'edit' | 'test' | 'finish'
   | 'steer' | 'spec-change' | 'takeover' | 'human-edit' | 'handback' | 'handoff'
   | 'merge' | 'error' | 'approve'
-  | 'mode' | 'check';                // mode change; goal check (tests on main, a screenshot, the planner's verdict)
+  | 'mode' | 'check'                 // mode change; goal check (tests on main, a screenshot, the planner's verdict)
+  | 'run';                           // ran the project's CLI (node src/cli.js ...); `output` holds what it printed
 
 export interface Step {              // ydoc.getArray('steps'): server only, append-only
   id: string; n: number;             // n: global order
@@ -79,8 +80,30 @@ export interface Step {              // ydoc.getArray('steps'): server only, app
   test?: { passed: number; failed: number; output: string };
   commit?: string;                   // short hash
   image?: string;                    // goal-check screenshot: GET /api/projects/<id>/<image>
+  output?: string;                   // run steps: the command's output, last 2,000 chars
   at: string;
 }
+
+export interface TerminalView {      // ydoc.getMap('terminal'): server only; the latest command run in a task's folder
+  taskId: string;
+  cmd: string;                       // e.g. "node --test" or "node src/cli.js add milk"
+  by: string;                        // 'agent' or a person's name
+  output: string;                    // stdout and stderr as they arrive (updates every 200 ms), last 8,000 chars
+  running: boolean;
+  exitCode?: number;                 // set when it ends; 124 = timed out
+  at: string;
+}
+
+// GET /api/projects/<id>/preview (main) or .../tasks/<id>/preview: how to show what the code builds.
+//   web  open `url` in an iframe (sandbox="allow-scripts allow-forms"); ask again after an edit step to refresh.
+//        how: 'static' src/index.html served by Hive, 'server' src/server.js running on this machine,
+//        'sandbox' src/server.js running in the Daytona sandbox (a signed URL, valid for an hour)
+//   cli  show `terminal[taskId]`; POST .../tasks/<id>/cli {by, args} runs it
+//   none nothing to show yet, or it failed to start: `why`
+export type Preview =
+  | { kind: 'web'; how: 'static' | 'server' | 'sandbox'; url: string }
+  | { kind: 'cli' }
+  | { kind: 'none'; why: string };
 
 export interface ChatMessage {       // ydoc.getArray('chat'): server only (browsers post via REST)
   id: string; from: string; text: string;
@@ -95,6 +118,7 @@ export const MAPS = {
   taskState: 'taskState',            // TaskState, server only
   sessions: 'sessions',              // SessionView, server only
   live: 'live',                      // sessionId -> text the agent is writing right now, server only
+  terminal: 'terminal',              // TerminalView by task id, server only
 } as const;
 export const ARRAYS = { steps: 'steps', chat: 'chat' } as const;
 

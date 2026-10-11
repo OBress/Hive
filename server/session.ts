@@ -3,17 +3,18 @@ import { join } from 'node:path';
 import type { AutonomyMode, Owner, TaskSpec, TaskState } from '@hive/shared/types';
 import { AGENT_SYSTEM, SEARCH_HELP, buildMessages, contextText, isTestFile, parseAction, type Action } from './agent.ts';
 import {
-  addChat, addStep, HttpError, live, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks, trim,
+  addChat, addStep, HttpError, live, openTerminal, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks,
+  terminal, trim,
 } from './doc.ts';
 import { AGENT, personAuthor, type GitUser } from './git.ts';
 import { autoStartable, readyTasks, waitingForOk } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
 import { saveTranscript } from './mongo.ts';
 import { openCodeOn, search } from './opencode.ts';
-import { current, currentId, inProject, sessionsDir } from './projects.ts';
+import { current, currentId, inProject, sessionsDir, workspaceDir } from './projects.ts';
 import { summarize } from './planner.ts';
 import { afterSchedule } from './verify.ts';
-import { runTests } from './runner.ts';
+import { runCli, runTests } from './runner.ts';
 import {
   commitAll, diff, ensureWorktree, head, listFiles, mergeToMain, readFile, safePath, takeMain, worktreeDir, writeFile,
 } from './workspace.ts';
@@ -306,12 +307,18 @@ async function act(s: SessionData, t: TaskSpec, dir: string, a: Action) {
     s.testOk = false;
     s.pending.push(`${commit ? `Wrote ${a.path} (commit ${commit}).` : `${a.path} is unchanged.`} ${filesNow(dir)}`);
   } else if (a.type === 'test') {
-    const { sandbox, ...r } = await runTests(dir);
+    const term = openTerminal(t.id, 'agent', 'node --test');
+    const { sandbox, ...r } = await runTests(dir, term.write);
+    term.end(r.failed ? 1 : 0);
     addStep({ ...ref(s), kind: 'test', text: `Tests: ${r.passed} passed, ${r.failed} failed${sandbox ? ' (in sandbox)' : ''}`, test: r });
     setTaskState(t.id, { lastTest: { passed: r.passed, failed: r.failed } });
     s.testOk = r.failed === 0 && r.passed > 0;
     const ran = listFiles(dir).filter(isTestFile);
     s.pending.push(`Test results: ${r.passed} passed, ${r.failed} failed. Test files that ran: ${ran.join(', ') || 'none'}.\n${r.output.slice(-2000)}`);
+  } else if (a.type === 'run') {
+    const r = readFile(dir, 'src/cli.js') === null ? null : await runCliIn(t.id, dir, 'agent', a.args);
+    s.pending.push(r ? `${r.cmd} exited with ${r.exitCode}${r.exitCode === 124 ? ' (stopped after 15 s)' : ''}. Output:\n${r.output.slice(-2000) || '(nothing)'}`
+      : `src/cli.js does not exist, so there is nothing to run. ${filesNow(dir)}`);
   } else if (!s.testOk) {
     s.pending.push('Run <test/> and make all tests pass before finishing.');
   } else {
@@ -341,6 +348,25 @@ async function finish(s: SessionData, t: TaskSpec, summary: string) {
     addStep({ ...ref(s), kind: 'error', text: `${note}; take over to resolve it` });
   }
   schedule();
+}
+
+// Run the project's CLI in a task's folder (or main's): output streams to terminal[taskId] and ends up in a run step.
+export async function runCliIn(taskId: string, dir: string, by: string, args: string[]) {
+  const cmd = ['node src/cli.js', ...args.map((a) => (/^[\w./:=@%+,-]+$/.test(a) ? a : JSON.stringify(a)))].join(' ');
+  const term = openTerminal(taskId, by, cmd);
+  const r = await runCli(dir, args, term.write);
+  term.end(r.exitCode);
+  addStep({
+    taskId, sessionId: taskState().get(taskId)?.sessionId, kind: 'run', by,
+    text: `${by === 'agent' ? 'Ran' : `${by} ran`} ${cmd}: exit ${r.exitCode}${r.sandbox ? ' (in sandbox)' : ''}`, output: r.output,
+  });
+  return { cmd, ...r };
+}
+
+export function startCli(taskId: string, by: string, args: string[]) {
+  const dir = filesDir(taskId) ?? workspaceDir();
+  if (readFile(dir, 'src/cli.js') === null) throw new HttpError(409, 'This project has no src/cli.js to run');
+  void runCliIn(taskId, dir, by, args).catch((e) => console.error(`CLI run in ${taskId} failed:`, (e as Error).message));
 }
 
 function fail(s: SessionData, note: string) {
@@ -380,7 +406,7 @@ function removeTaskState(taskId: string) {
     active.get(key(sid))?.abort();
     if (sessions().has(sid)) setSession(sid, { state: 'failed' });
   }
-  serverWrite(() => taskState().delete(taskId));
+  serverWrite(() => { taskState().delete(taskId); terminal().delete(taskId); });
 }
 
 // React to browsers editing the graph.
@@ -495,6 +521,9 @@ export function recover() {
     if (st.status === 'running') setTaskState(st.taskId, { status: 'paused', note: 'server restarted' });
   }
   for (const sv of sessions().values()) if (sv.state === 'running') setSession(sv.id, { state: 'paused' });
-  serverWrite(() => { for (const k of [...live().keys()]) live().delete(k); });
+  serverWrite(() => {
+    for (const k of [...live().keys()]) live().delete(k);
+    for (const v of [...terminal().values()]) if (v.running) terminal().set(v.taskId, { ...v, running: false, output: `${v.output}\n(server restarted)` });
+  });
   schedule();   // Semi-auto and Automatic pick up where they left off
 }

@@ -14,7 +14,10 @@ interface Box {
   root: string;                                 // folder in the sandbox holding one mirror per worktree
   synced: Map<string, Map<string, string>>;     // mirror name -> path -> content already uploaded
   openCode: Promise<void>;                      // settles when the OpenCode server inside is up
+  servers: Map<string, Served>;                 // mirror folder -> its web app's server (sandboxServe)
+  nextPort: number;
 }
+interface Served { rev: string; up: Promise<{ port: number; pid: string }>; url: string; until: number }
 let box: Promise<Box> | null = null;
 const OPENCODE_PORT = 4096;
 
@@ -60,7 +63,7 @@ async function create(): Promise<Box> {
   console.log(`Sandbox ${sb.id} ready in ${Math.round((Date.now() - started) / 1000)} s (node ${node.output.trim()})`);
   const openCode = startOpenCode(toolbox, home);
   openCode.catch((e) => console.error(`No search in the sandbox: ${(e as Error).message}`));
-  return { id: sb.id, toolbox, root: `${home}/hive`, synced: new Map(), openCode };
+  return { id: sb.id, toolbox, root: `${home}/hive`, synced: new Map(), openCode, servers: new Map(), nextPort: 3001 };
 }
 
 // An OpenCode server in the sandbox lets the agent search the mirrored files (see opencode.ts). The image's own
@@ -133,4 +136,40 @@ export async function sandboxOpenCode(dir: string, path: string, query: Record<s
   const params = new URLSearchParams({ ...query, directory: await sync(b, dir) });
   const r = await exec(b, `curl -s -m 8 "http://127.0.0.1:${OPENCODE_PORT}${path}?${params.toString().replace(/[^\w%&=.+*-]/g, '')}"`, undefined, 15);
   return JSON.parse(r.output);
+}
+
+// A web app's own server in the sandbox: `node src/server.js` with its own PORT in the mirror of `dir`, restarted
+// when `rev` (the worktree's commit) changes. Returns a signed preview URL that works in an iframe for an hour.
+export async function sandboxServe(dir: string, rev: string): Promise<string> {
+  const b = await getBox();
+  const remote = await sync(b, dir);
+  let s = b.servers.get(remote);
+  if (!s || s.rev !== rev) {
+    const old = s;
+    const port = b.nextPort++;
+    s = { rev, url: '', until: 0, up: (async () => {
+      const prev = await old?.up.catch(() => null);
+      if (prev) await exec(b, `kill ${prev.pid}`).catch(() => {});
+      const log = `/tmp/hive-${port}.log`;
+      const pid = (await exec(b, `sh -c 'cd ${remote} && PORT=${port} nohup node src/server.js > ${log} 2>&1 & echo $!'`)).output.trim();
+      if (!/^\d+$/.test(pid)) throw new Error(`could not start src/server.js: ${pid.slice(0, 200)}`);
+      for (let i = 0; i < 20; i++) {
+        const code = await exec(b, `curl -s -o /dev/null -m 1 -w %{http_code} http://127.0.0.1:${port}/`).catch(() => null);
+        if (code && /^[1-5]\d\d$/.test(code.output.trim())) return { port, pid };
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      const tail = (await exec(b, `tail -c 600 ${log}`).catch(() => null))?.output.trim();
+      await exec(b, `kill ${pid}`).catch(() => {});
+      throw new Error(`src/server.js did not answer on PORT within 10 s${tail ? `:\n${tail}` : ''}`);
+    })() };
+    b.servers.set(remote, s);
+    s.up.catch(() => { if (b.servers.get(remote) === s) b.servers.delete(remote); });
+  }
+  const { port } = await s.up;
+  if (Date.now() > s.until) {
+    const r = await call(`${api()}/sandbox/${b.id}/ports/${port}/signed-preview-url?expiresInSeconds=3600`);
+    s.url = ((await r.json()) as { url: string }).url;
+    s.until = Date.now() + 50 * 60 * 1000;
+  }
+  return s.url;
 }

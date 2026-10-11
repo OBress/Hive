@@ -9,12 +9,13 @@ import { createRepo, pushMain, remoteFor } from './github.ts';
 import { models, provider } from './llm.ts';
 import { history } from './mongo.ts';
 import { chat, setMode, stackDoc, summarize } from './planner.ts';
-import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, stopProject, takeover } from './session.ts';
+import { livePreview, stopPreviews } from './preview.ts';
+import { filesDir, getTask, handback, handoff, humanEdit, run, startCli, startTask, steer, stopProject, takeover } from './session.ts';
 import {
   canSee, createProject, current, deleteProject, projectDir, getProject, inProject, isOwner, listProjects, openProject, projectsFor, setShared, slugOf,
   updateProject, workspaceDir,
 } from './projects.ts';
-import { runTests } from './runner.ts';
+import { runTests, splitArgs } from './runner.ts';
 import { pushRemote } from './settings.ts';
 import { findUser, rememberUser, searchUsers } from './users.ts';
 import { head, listFiles, readFile, safePath } from './workspace.ts';
@@ -157,6 +158,7 @@ routes.post('/delete', async (req, res) => {
   const p = current();
   if (!isOwner(p, by)) throw new HttpError(403, `Only ${p.createdBy} can delete this project`);
   stopProject();
+  stopPreviews(projectDir());
   await deleteProject(p.id);
   console.log(`Project ${p.id} deleted by ${by}`);
   res.json({ ok: true });
@@ -192,6 +194,33 @@ routes.get('/previews/:file', (req, res) => {
   const path = join(projectDir(), 'previews', file);
   if (!existsSync(path)) throw new HttpError(404, 'No such screenshot');
   res.sendFile(path);
+});
+
+// Live preview (see Preview in shared/types.ts): main's, or a task's folder (main's until it has one).
+// Static pages are served from src/ with a sandbox CSP, so their scripts never run as Hive's own origin.
+const apiBase = (req: Request) =>
+  `${req.get('x-forwarded-proto')?.split(',')[0] || req.protocol}://${req.get('host')}${req.baseUrl}`;
+routes.get('/preview', async (req, res) => {
+  res.json(await livePreview(workspaceDir(), `${apiBase(req)}/preview/files`, req.hostname));
+});
+routes.get('/tasks/:id/preview', async (req, res) => {
+  getTask(id(req));
+  res.json(await livePreview(filesDir(id(req)) ?? workspaceDir(), `${apiBase(req)}/tasks/${encodeURIComponent(id(req))}/preview/files`, req.hostname));
+});
+function sendPreviewFile(dir: string, req: Request, res: Response) {
+  const p = safePath(`src/${([] as string[]).concat(req.params.path ?? []).join('/')}`);
+  if (!p || !existsSync(join(dir, p))) throw new HttpError(404, 'No such file');
+  res.set({ 'Content-Security-Policy': 'sandbox allow-scripts allow-forms allow-modals', 'Cache-Control': 'no-store' });
+  res.sendFile(join(dir, p));
+}
+routes.get('/preview/files/*path', (req, res) => sendPreviewFile(workspaceDir(), req, res));
+routes.get('/tasks/:id/preview/files/*path', (req, res) => sendPreviewFile(filesDir(id(req)) ?? workspaceDir(), req, res));
+
+// Run the project's CLI in a task's folder; output streams to terminal[taskId] and a run step.
+routes.post('/tasks/:id/cli', (req, res) => {
+  const { by } = need(req, 'by');
+  startCli(id(req), by, splitArgs(opt(req, 'args')));
+  res.status(202).json({ ok: true });
 });
 
 routes.post('/tasks/:id/start', async (req, res) => {

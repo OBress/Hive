@@ -36,3 +36,8 @@ test('messages alternate and end with the user', () => {
   expect(m.map((x) => x.role)).toEqual(['user', 'assistant', 'user']);
   expect(m[0].content).toBe('ctx\n\ngo');
 });
+
+test('parses a CLI run with quoted arguments', () => {
+  expect(parseAction(`PLAN: try it\n<run args="add 'buy milk' --done"/>`).action).toEqual({ type: 'run', args: ['add', 'buy milk', '--done'] });
+  expect(parseAction('PLAN: try it\n<run/>').action).toEqual({ type: 'run', args: [] });
+});

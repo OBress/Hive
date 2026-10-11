@@ -1,4 +1,5 @@
 import type { Msg } from './llm.ts';
+import { splitArgs } from './runner.ts';
 import { safePath } from './workspace.ts';
 
 export const AGENT_SYSTEM = `You are a coding agent working on one task in a shared team workspace. Your teammates watch every step live and may message you while you work.
@@ -13,6 +14,7 @@ Actions:
 ...the complete file content...
 </write>
 <test/>
+<run args="add 'buy milk'"/>
 <finish>Two or three sentences: what you built, how it is tested, anything left.</finish>
 
 How the workspace works:
@@ -20,7 +22,8 @@ How the workspace works:
 - Trust only the "Files in the workspace" list and the results of your actions, never your earlier PLAN lines. A file not in that list does not exist yet.
 - You may write only under src/ and test/. You may also read package.json and README.md. ES modules ("type": "module"), Node built-ins only, no dependencies.
 - <test/> runs node --test, which picks up every .js file under test/ automatically; there is no config to check. Each result lists the test files that ran.
-- If the project is something people open (a website, an API with pages, a game), the app starts with "node src/server.js" and listens on process.env.PORT, or it is a static src/index.html. Hive opens it that way to take screenshots. Export the server's start function so tests can import it without it listening on import.
+- If the project is something people open (a website, an API with pages, a game), the app starts with "node src/server.js" and listens on process.env.PORT, or it is a static src/index.html. Hive opens it that way to take screenshots. Export the server's start function so tests can import it without it listening on import. A static page loads its scripts and styles with relative paths (app.js, not /app.js).
+- If the project is a command-line tool, it starts with "node src/cli.js <args>": it reads process.argv.slice(2), prints to stdout and exits, and never waits for input. Keep its logic in other src/ files so tests import those. <run args="..."/> runs it with those arguments (15 s at most) and shows you and your teammates what it prints; try it once tests pass.
 
 How to do the task:
 - Read only the files you need (dependencies' code is already in src/). Write the src/ file, then write its tests in test/<task id>.test.js (or the test file the spec names) using node:test and node:assert/strict, then run <test/>.
@@ -38,19 +41,21 @@ export type Action =
   | { type: 'search'; pattern: string }
   | { type: 'write'; path: string; content: string }
   | { type: 'test' }
+  | { type: 'run'; args: string[] }
   | { type: 'finish'; summary: string };
 
 export function parseAction(raw: string): { plan: string; action?: Action; error?: string } {
   const text = raw.replace(/<think>[\s\S]*?<\/think>/g, '');
   // The PLAN line, or failing that the first line of prose before any action (models sometimes drop the label).
   const labeled = /^[\s*#]*PLAN\**:\**\s*(.+)$/im.exec(text)?.[1];
-  const prose = text.split(/<(?:read|search|write|test|finish)\b/)[0].split('\n').map((l) => l.trim()).find(Boolean);
+  const prose = text.split(/<(?:read|search|write|test|run|finish)\b/)[0].split('\n').map((l) => l.trim()).find(Boolean);
   const plan = (labeled ?? prose ?? '').replace(/\*+$/, '').trim().slice(0, 300);
   const found = [
     { re: /<read\s+path="([^"]*)"\s*\/>/, make: (m: RegExpExecArray) => ({ type: 'read', path: m[1] }) },
     { re: /<search\s+pattern="([^"]+)"\s*\/>/, make: (m: RegExpExecArray) => ({ type: 'search', pattern: m[1] }) },
     { re: /<write\s+path="([^"]*)"\s*>([\s\S]*?)<\/write>/, make: (m: RegExpExecArray) => ({ type: 'write', path: m[1], content: unfence(m[2]) }) },
     { re: /<test\s*\/>/, make: () => ({ type: 'test' }) },
+    { re: /<run(?:\s+args="([^"]*)")?\s*\/>/, make: (m: RegExpExecArray) => ({ type: 'run', args: splitArgs(m[1] ?? '') }) },
     { re: /<finish>([\s\S]*?)<\/finish>/, make: (m: RegExpExecArray) => ({ type: 'finish', summary: m[1].trim() }) },
   ].map(({ re, make }) => { const m = re.exec(text); return m ? { index: m.index, action: make(m) as Action } : null; })
     .filter((x) => x !== null)
