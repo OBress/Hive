@@ -7,5 +7,6 @@
     "reset": "node scripts/reset.mjs",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck"
-  }
+  },
+  "version": "0.1.0"
 }
