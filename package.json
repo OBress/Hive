@@ -1,0 +1,11 @@
+{
+  "name": "hive",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --filter server --filter web dev",
+    "reset": "node scripts/reset.mjs",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  }
+}
