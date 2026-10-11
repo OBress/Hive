@@ -14,7 +14,7 @@ import { currentId, inProject, sessionsDir } from './projects.ts';
 import { summarize } from './planner.ts';
 import { runTests } from './runner.ts';
 import {
-  commitAll, diff, ensureWorktree, head, listFiles, mergeToMain, readFile, safePath, worktreeDir, writeFile,
+  commitAll, diff, ensureWorktree, head, listFiles, mergeToMain, readFile, safePath, takeMain, worktreeDir, writeFile,
 } from './workspace.ts';
 
 const MAX_PARALLEL = Number(process.env.MAX_PARALLEL || 2);
@@ -32,6 +32,7 @@ export interface SessionData {
   takeoverBase?: string;      // worktree HEAD when a person took over
   testOk: boolean;            // last test run passed with no writes since
   bad: number; errors: number;
+  conflicts?: number;         // merge conflicts the agent has been asked to reconcile in this run
 }
 
 // Keyed by project/session id; everything below runs inside one project (see projects.ts).
@@ -261,6 +262,14 @@ async function finish(s: SessionData, t: TaskSpec, summary: string) {
     addStep({ ...ref(s), kind: 'merge', text: `Merged task/${t.id} into main`, commit: m.commit });
     setTaskState(t.id, { status: 'done', note: undefined });
     setSession(s.id, { state: 'done', summary });
+  } else if ((s.conflicts ?? 0) < 4 && await takeMain(t.id)) {
+    // Teammates' tasks changed the same lines: take main's version and let the agent put its own change back.
+    const files = m.files.join(', ') || 'some files';
+    s.conflicts = (s.conflicts ?? 0) + 1;
+    s.testOk = false;
+    addStep({ ...ref(s), kind: 'merge', text: `Merge conflict in ${files}: took main's version, the agent is re-applying its change` });
+    s.pending.push(`Your branch conflicted with main in ${files}: other tasks changed the same lines and were merged first. Main's version of those lines is now in your workspace, so parts of your work in ${files} are gone. Read each of those files, add back what this task needs while keeping the other tasks' code, run <test/>, then finish.`);
+    return;
   } else {
     const note = `Merge conflict in ${m.files.join(', ') || 'unknown files'}`;
     setTaskState(t.id, { status: 'needs_review', note });
@@ -380,7 +389,7 @@ async function giveToAgent(taskId: string, by: string, note: string, kind: 'hand
   } else if (note) {
     s.pending.push(`${by} handed this task to you. Their note: ${note}`);
   }
-  Object.assign(s, { testOk: false, takeoverBase: undefined, limit: s.stepCount + MAX_STEPS, bad: 0, errors: 0 });
+  Object.assign(s, { testOk: false, takeoverBase: undefined, limit: s.stepCount + MAX_STEPS, bad: 0, errors: 0, conflicts: 0 });
   save(s);
   if (kind === 'handback') addStep({ ...ref(s, by), kind: 'handback', text: `${by} handed back to the agent${note ? `: ${note}` : ''}` });
   if (!t.deps.every(isDone)) {

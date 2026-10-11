@@ -101,3 +101,18 @@ export function mergeToMain(taskId: string): Promise<{ ok: true; commit: string 
     }
   });
 }
+
+// Bring main into the task's branch so it can merge cleanly later. Where both changed the same lines, main's side
+// is kept; the agent then re-applies its own change on top.
+export function takeMain(taskId: string): Promise<boolean> {
+  const dir = worktreeDir(taskId);
+  return withRepoLock(async () => {
+    try {
+      await git(dir, ['merge', '-X', 'theirs', '-m', `Merge main into task/${taskId}`, 'main'], HIVE);
+      return true;
+    } catch {
+      await git(dir, ['merge', '--abort']).catch(() => {});
+      return false;
+    }
+  });
+}
