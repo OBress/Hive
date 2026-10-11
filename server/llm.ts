@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 
-export interface Msg { role: 'user' | 'assistant'; content: string }
+export interface Msg { role: 'user' | 'assistant'; content: string; images?: string[] }   // images: base64 PNG, user turns only
 export interface GenerateOptions {
   model: string;
   system: string;
@@ -12,6 +12,10 @@ export interface GenerateOptions {
 
 export const provider = (process.env.LLM_PROVIDER || 'openai').toLowerCase();
 export const models = { agent: '', planner: '' };
+
+// A model that can look at screenshots (the goal check): VISION_MODEL, else the planner with Anthropic (Claude sees
+// images). Empty means screenshots are still taken and shown to people, but the planner judges from text.
+export const visionModel = () => process.env.VISION_MODEL?.trim() || (provider === 'anthropic' ? models.planner : '');
 const baseUrl = () => (process.env.LLM_BASE_URL ?? '').replace(/\/+$/, '');
 let configError = '';
 
@@ -98,7 +102,10 @@ async function openaiGenerate(o: GenerateOptions): Promise<string> {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.LLM_API_KEY}` },
     body: JSON.stringify({
       model: o.model, stream: true, max_tokens: o.maxTokens ?? 4096,
-      messages: [{ role: 'system', content: o.system }, ...o.messages],
+      messages: [{ role: 'system', content: o.system }, ...o.messages.map((m) => (m.images?.length ? {
+        role: m.role,
+        content: [{ type: 'text', text: m.content }, ...m.images.map((d) => ({ type: 'image_url', image_url: { url: `data:image/png;base64,${d}` } }))],
+      } : { role: m.role, content: m.content }))],
     }),
     signal: o.signal,
   });
@@ -131,7 +138,16 @@ let anthropic: Anthropic | null = null;
 async function anthropicGenerate(o: GenerateOptions): Promise<string> {
   anthropic ??= new Anthropic();
   const stream = anthropic.messages.stream(
-    { model: o.model, system: o.system, messages: o.messages, max_tokens: o.maxTokens ?? 4096 },
+    {
+      model: o.model, system: o.system, max_tokens: o.maxTokens ?? 4096,
+      messages: o.messages.map((m) => (m.images?.length ? {
+        role: m.role,
+        content: [
+          ...m.images.map((d) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: d } })),
+          { type: 'text' as const, text: m.content },
+        ],
+      } : { role: m.role, content: m.content })),
+    },
     { signal: o.signal },
   );
   stream.on('text', (d) => o.onToken?.(d));
@@ -183,6 +199,12 @@ function fakeAgent(messages: Msg[]): string {
 
 function fakePlanner(system: string, messages: Msg[]): string {
   const last = messages[messages.length - 1]?.content ?? '';
+  if (/running the goal check/.test(system)) {
+    const failing = /^Tests on main: \d+ passed, ([1-9]\d*) failed/m.test(last);
+    return JSON.stringify(failing
+      ? { done: false, reply: 'Tests fail on main, so I added a task to fix them.', ops: [{ op: 'addTask', task: { id: 'fix-tests', title: 'Fix failing tests on main', spec: 'Make every test under test/ pass on main.', deps: [] } }] }
+      : { done: true, reply: 'Goal check: every task is done and the tests pass on main.', ops: [] });
+  }
   if (/architect/.test(system)) {
     const name = /^Project: (.+)$/m.exec(last)?.[1] ?? 'Project';
     return `# Stack and spec: ${name}

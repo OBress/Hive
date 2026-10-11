@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEMO_REQUEST, sendChat, useHive } from '@/lib/mock';
 import type { ChatMessage, Decision, Task } from '@/lib/types';
+import { apiUrl } from '@/lib/hive';
+import { projectId } from '@/lib/projects';
 import Composer, { RichText } from './Composer';
 import { Avatar, clock, Icon, isAgent, nameColor, tilt } from './ui';
 
@@ -119,6 +121,7 @@ function Message({ m, me, tasks, onFocusTask, onCite, onSearch }: {
 
 const KIND_LABEL: Record<Decision['kind'], string> = {
   'spec-change': 'spec', 'graph-change': 'graph', 'agent-result': 'result', conflict: 'conflict', merge: 'merge', push: 'push',
+  check: 'check', mode: 'mode',
 };
 
 function DecisionLog({ decisions, onFocusTask }: { decisions: Decision[]; onFocusTask: (id: string) => void }) {
@@ -144,6 +147,12 @@ function DecisionLog({ decisions, onFocusTask }: { decisions: Decision[]; onFocu
             {d.why && <blockquote className="hv-why hv-why--sm">“{d.why}”</blockquote>}
             {d.commit && <code className="hv-log__commit">{d.commit}</code>}
           </button>
+          {d.image && (
+            <a className="hv-log__shot" href={apiUrl(`/api/projects/${projectId()}/${d.image}`)} target="_blank" rel="noreferrer" title="Open the full screenshot">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={apiUrl(`/api/projects/${projectId()}/${d.image}`)} alt="Screenshot of the app taken by the goal check" loading="lazy" />
+            </a>
+          )}
         </li>
       ))}
     </ol>

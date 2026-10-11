@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { usePeers } from '@/lib/hive';
-import { runReady, updateTask, useHive } from '@/lib/mock';
+import { runReady, setAsk, updateTask, useHive } from '@/lib/mock';
+import { useMode } from './ModeSwitch';
 import type { Task, TaskRun } from '@/lib/types';
 import LiveSession from './LiveSession';
 import RunSteps from './RunSteps';
@@ -54,6 +55,7 @@ function Body({ task, run, me, onClose }: { task: Task; run?: TaskRun; me: strin
     updateTask(task.id, { spec, acceptance: acc.filter((a) => a.trim()), lastWhy: why.trim() || undefined }, me);
     discard();
   };
+  const mode = useMode();
   const dirty = editing && (spec !== task.spec || JSON.stringify(acc) !== JSON.stringify(task.acceptance));
 
   return (
@@ -87,10 +89,22 @@ function Body({ task, run, me, onClose }: { task: Task; run?: TaskRun; me: strin
         )}
         {task.assignee === 'agent' && (
           <button className="hv-btn hv-btn--blue hv-btn--sm" onClick={() => runReady(task.id)} disabled={run?.status === 'running'}>
-            <Icon name="play" size={14} /> Run this task
+            <Icon name={task.ask && status === 'ready' ? 'check' : 'play'} size={14} /> {task.ask && status === 'ready' ? 'Approve and start' : 'Run this task'}
           </button>
         )}
       </div>
+
+      {status !== 'done' && (
+        <label className="hv-panel__ask">
+          <input type="checkbox" checked={!!task.ask} onChange={(e) => setAsk(task.id, e.target.checked, me)} />
+          <span>
+            <b><Icon name="lock" size={14} /> Ask before starting</b>
+            <em>{mode === 'semi' ? 'Semi-auto waits for your OK before an agent starts this task.'
+              : mode === 'auto' ? 'Only applies in Semi-auto. In Auto every task runs.'
+              : 'Only applies in Semi-auto. In Manual every task waits for Start anyway.'}</em>
+          </span>
+        </label>
+      )}
 
       <LiveSession id={task.id} me={me} />
 

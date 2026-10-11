@@ -9,7 +9,7 @@ import { initModels } from './llm.ts';
 import { initMirror } from './mongo.ts';
 import { DATA_DIR } from './paths.ts';
 import {
-  createProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setCloser, setOpener, setProjectDoc,
+  createProject, updateProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setCloser, setOpener, setProjectDoc,
 } from './projects.ts';
 import { api, errorHandler } from './routes.ts';
 import { loadUsers } from './users.ts';
@@ -115,7 +115,10 @@ for (const p of projects) await open(p);
 // HIVE_SEED names a JSON file of tasks for a first project (the smoke test uses smoke-seed.json).
 const seed = process.env.HIVE_SEED;
 if (seed && !projects.length) {
-  await open(await createProject('URL shortener', 'A tiny URL shortener API with tests.', 'seed'), (JSON.parse(readFileSync(seed, 'utf8')) as { tasks: TaskSpec[] }).tasks);
+  // The seeded project starts in Manual, so nothing runs until someone presses Run ready (or switches the mode).
+  const p = await createProject('URL shortener', 'A tiny URL shortener API with tests.', 'seed');
+  await updateProject(p.id, { mode: 'manual', modeSetBy: 'seed' });
+  await open(p, (JSON.parse(readFileSync(seed, 'utf8')) as { tasks: TaskSpec[] }).tasks);
   console.log(`Seeded a project from ${seed}`);
 }
 warmSandbox();

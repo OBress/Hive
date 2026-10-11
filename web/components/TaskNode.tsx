@@ -33,6 +33,7 @@ export default function TaskNode({ data, selected }: NodeProps<TaskNodeType>) {
         <div className="hv-node__title">{task.title}</div>
         <div className="hv-node__foot">
           <StatusSticker status={status} size="sm" />
+          {task.ask && status !== 'done' && <span className="hv-sticker hv-node__ask" title="Waits for a person's OK in Semi-auto"><Icon name="lock" size={11} /> ask</span>}
           {run?.commit && status === 'done' && <span className="hv-node__commit">{run.commit}</span>}
         </div>
       </div>

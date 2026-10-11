@@ -56,7 +56,7 @@ export function setShared(id: string, login: string, on: boolean): Promise<Proje
   return updateProject(id, { sharedWith: on ? [...rest, login] : rest });
 }
 
-export async function updateProject(id: string, patch: Partial<Pick<Project, 'name' | 'goal' | 'repo' | 'sharedWith' | 'stack'>>): Promise<Project> {
+export async function updateProject(id: string, patch: Partial<Pick<Project, 'name' | 'goal' | 'repo' | 'sharedWith' | 'stack' | 'mode' | 'modeSetBy'>>): Promise<Project> {
   const i = list.findIndex((p) => p.id === id);
   list[i] = { ...list[i], ...patch };
   await save(list[i]);

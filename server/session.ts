@@ -1,17 +1,18 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Owner, TaskSpec, TaskState } from '@hive/shared/types';
+import type { AutonomyMode, Owner, TaskSpec, TaskState } from '@hive/shared/types';
 import { AGENT_SYSTEM, SEARCH_HELP, buildMessages, contextText, isTestFile, parseAction, type Action } from './agent.ts';
 import {
-  addStep, HttpError, live, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks, trim,
+  addChat, addStep, HttpError, live, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks, trim,
 } from './doc.ts';
 import { AGENT, personAuthor, type GitUser } from './git.ts';
-import { readyTasks } from './graph.ts';
+import { autoStartable, readyTasks, waitingForOk } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
 import { saveTranscript } from './mongo.ts';
 import { openCodeOn, search } from './opencode.ts';
 import { current, currentId, inProject, sessionsDir } from './projects.ts';
 import { summarize } from './planner.ts';
+import { afterSchedule } from './verify.ts';
 import { runTests } from './runner.ts';
 import {
   commitAll, diff, ensureWorktree, head, listFiles, mergeToMain, readFile, safePath, takeMain, worktreeDir, writeFile,
@@ -39,7 +40,10 @@ export interface SessionData {
 const cache = new Map<string, SessionData>();
 const active = new Map<string, AbortController>();   // sessions with a running loop
 const rerun = new Set<string>();
-const autoRun = new Set<string>();                   // projects where Run ready was pressed
+// Per project/task, in memory: tasks already announced as waiting for an OK, and failed tasks already retried.
+const announced = new Set<string>();
+const retried = new Set<string>();
+const queued = new Set<string>();     // Run ready in Manual: tasks that were ready then, started as slots free up
 const key = (sid: string) => `${currentId()}/${sid}`;
 
 function load(id: string | undefined): SessionData | null {
@@ -69,7 +73,7 @@ export function stopProject() {
   const prefix = `${currentId()}/`;
   for (const [k, c] of active) if (k.startsWith(prefix)) c.abort();
   for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k);
-  autoRun.delete(currentId());
+  for (const set of [announced, retried, queued]) for (const k of [...set]) if (k.startsWith(prefix)) set.delete(k);
 }
 
 export function getTask(id: string): TaskSpec {
@@ -117,22 +121,68 @@ export function startTask(taskId: string, by: string): Promise<string> {
   });
 }
 
-export function run(): string[] {
-  autoRun.add(currentId());
-  return schedule();
-}
+export const modeOf = (): AutonomyMode => current().mode ?? 'auto';
 
-export function schedule(): string[] {
-  if (!autoRun.has(currentId())) return [];
-  const states = taskState().toJSON() as Record<string, TaskState>;
-  let running = Object.values(states).filter((s) => s.status === 'running').length;
+// Start ready tasks, at most MAX_PARALLEL running at once.
+function startAll(ids: string[], by: string): string[] {
+  let running = [...taskState().values()].filter((s) => s.status === 'running').length;
   const started: string[] = [];
-  for (const id of readyTasks(tasks().toJSON() as Record<string, TaskSpec>, states)) {
+  for (const id of ids) {
     if (running >= MAX_PARALLEL) break;
     running++;
     started.push(id);
-    startTask(id, 'agent').catch((e) => console.error(`Could not start ${id}:`, (e as Error).message));
+    startTask(id, by).catch((e) => console.error(`Could not start ${id}:`, (e as Error).message));
   }
+  return started;
+}
+
+// Run ready (a person, any mode): start everything ready now, MAX_PARALLEL at a time. In Manual the rest of
+// this batch starts as slots free up, but tasks that become ready later wait for the next press. In Semi-auto
+// and Automatic the mode keeps going anyway. Tasks waiting for an OK in Semi-auto need their own Start.
+export function run(by = 'agent'): string[] {
+  const all = tasks().toJSON() as Record<string, TaskSpec>;
+  const states = taskState().toJSON() as Record<string, TaskState>;
+  const waiting = new Set(waitingForOk(all, states, modeOf()));
+  const ready = readyTasks(all, states).filter((id) => !waiting.has(id));
+  for (const id of ready) queued.add(`${currentId()}/${id}`);
+  return startQueued(by);
+}
+
+function startQueued(by: string): string[] {
+  const all = tasks().toJSON() as Record<string, TaskSpec>;
+  const ready = readyTasks(all, taskState().toJSON() as Record<string, TaskState>);
+  const mine = (id: string) => queued.has(`${currentId()}/${id}`);
+  for (const k of [...queued]) if (k.startsWith(`${currentId()}/`) && !ready.includes(k.slice(currentId().length + 1))) queued.delete(k);
+  const started = startAll(ready.filter(mine), by);
+  for (const id of started) queued.delete(`${currentId()}/${id}`);
+  return started;
+}
+
+// Called whenever something changes. In Semi-auto and Automatic it keeps the graph moving: resumes tasks a
+// restart paused, retries a failed task once, starts what the mode allows, says which tasks wait for an OK,
+// and when every task is done runs the goal check (verify.ts).
+export function schedule(): string[] {
+  const mode = modeOf();
+  if (mode === 'manual') return startQueued('agent');
+  const k = (id: string) => `${currentId()}/${id}`;
+  for (const st of taskState().values()) {
+    if (st.owner.kind !== 'agent') continue;
+    if (st.status === 'paused' && st.note === 'server restarted') setTaskState(st.taskId, { status: 'todo', note: undefined });
+    else if (st.status === 'failed' && !retried.has(k(st.taskId))) {
+      retried.add(k(st.taskId));
+      addStep({ taskId: st.taskId, kind: 'error', by: 'planner', text: `Retrying once after: ${st.note ?? 'failure'}` });
+      setTaskState(st.taskId, { status: 'todo', note: 'Retrying after a failure' });
+    }
+  }
+  const all = tasks().toJSON() as Record<string, TaskSpec>;
+  const states = taskState().toJSON() as Record<string, TaskState>;
+  const started = startAll(autoStartable(all, states, mode), 'agent');
+  for (const id of waitingForOk(all, states, mode)) {
+    if (announced.has(k(id))) continue;
+    announced.add(k(id));
+    addChat({ from: 'planner', text: `${all[id].title} is ready and waiting for your OK. Open it and press Start.`, taskIds: [id] });
+  }
+  void afterSchedule();
   return started;
 }
 
@@ -446,4 +496,5 @@ export function recover() {
   }
   for (const sv of sessions().values()) if (sv.state === 'running') setSession(sv.id, { state: 'paused' });
   serverWrite(() => { for (const k of [...live().keys()]) live().delete(k); });
+  schedule();   // Semi-auto and Automatic pick up where they left off
 }

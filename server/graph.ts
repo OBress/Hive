@@ -1,4 +1,5 @@
-import type { TaskSpec, TaskState } from '@hive/shared/types';
+import type { AutonomyMode, TaskSpec, TaskState } from '@hive/shared/types';
+import { layoutGraph } from '@hive/shared/layout';
 
 type Deps = Record<string, { deps: string[] }>;
 
@@ -29,16 +30,26 @@ export function readyTasks(tasks: Record<string, TaskSpec>, states: Record<strin
   });
 }
 
-// New tasks go 280 px right of their right-most dependency, below whatever is already in that column.
-export function placeNew(tasks: Record<string, TaskSpec>, deps: string[]): { x: number; y: number } {
-  const x = deps.length ? Math.max(...deps.map((d) => tasks[d]?.x ?? 0)) + 280 : 0;
-  const column = Object.values(tasks).filter((t) => Math.abs(t.x - x) < 140);
-  return { x, y: column.length ? Math.max(...column.map((t) => t.y)) + 120 : 40 };
+// Which ready tasks an agent may start by itself in this mode, and which are waiting for a person's OK.
+// Manual: none (people press Start or Run ready). Semi-auto: all but tasks marked `ask`. Automatic: all.
+export function autoStartable(tasks: Record<string, TaskSpec>, states: Record<string, TaskState>, mode: AutonomyMode): string[] {
+  if (mode === 'manual') return [];
+  return readyTasks(tasks, states).filter((id) => mode === 'auto' || !tasks[id].ask);
+}
+export const waitingForOk = (tasks: Record<string, TaskSpec>, states: Record<string, TaskState>, mode: AutonomyMode): string[] =>
+  mode === 'semi' ? readyTasks(tasks, states).filter((id) => tasks[id].ask) : [];
+
+// Lay the whole graph out top to bottom (see shared/layout.ts); returns the ids whose position changed.
+export function relayout(tasks: Record<string, TaskSpec>): string[] {
+  const pos = layoutGraph(Object.values(tasks));
+  const moved = Object.values(tasks).filter((t) => t.x !== pos[t.id].x || t.y !== pos[t.id].y);
+  for (const t of moved) Object.assign(t, pos[t.id]);
+  return moved.map((t) => t.id);
 }
 
 export type GraphOp =
-  | { op: 'addTask'; task: { id: string; title: string; spec: string; deps?: string[] } }
-  | { op: 'updateTask'; id: string; fields: { title?: string; spec?: string; deps?: string[] } }
+  | { op: 'addTask'; task: { id: string; title: string; spec: string; deps?: string[]; ask?: boolean } }
+  | { op: 'updateTask'; id: string; fields: { title?: string; spec?: string; deps?: string[]; ask?: boolean } }
   | { op: 'removeTask'; id: string }
   | { op: 'addDep'; from: string; to: string }      // `to` depends on `from`
   | { op: 'removeDep'; from: string; to: string };
@@ -53,6 +64,7 @@ export function applyOps(current: Record<string, TaskSpec>, states: Record<strin
   const removed = new Set<string>();
   const known = (id: unknown): id is string => typeof id === 'string' && id in tasks;
   const reject = (op: unknown, why: string) => rejected.push(`${JSON.stringify(op)}: ${why}`);
+  let shaped = false;   // tasks or edges added or removed: lay the graph out again
 
   for (const raw of ops) {
     const op = raw as GraphOp;
@@ -64,8 +76,9 @@ export function applyOps(current: Record<string, TaskSpec>, states: Record<strin
       if (!deps.every(known)) { reject(op, 'unknown dependency'); continue; }
       let id = slug(t.id || t.title);
       for (let i = 2; id in tasks; i++) id = `${slug(t.id || t.title)}-${i}`;
-      tasks[id] = { id, title: t.title, spec: t.spec, deps, ...placeNew(tasks, deps), createdBy: by };
+      tasks[id] = { id, title: t.title, spec: t.spec, deps, x: 0, y: 0, ...(t.ask ? { ask: true } : {}), createdBy: by };
       changed.add(id);
+      shaped = true;
     } else if (op?.op === 'updateTask') {
       if (!known(op.id)) { reject(op, 'unknown task'); continue; }
       const f = op.fields ?? {};
@@ -73,7 +86,8 @@ export function applyOps(current: Record<string, TaskSpec>, states: Record<strin
       const t = tasks[op.id];
       if (typeof f.title === 'string') t.title = f.title;
       if (typeof f.spec === 'string') { t.spec = f.spec; t.editedBy = by; }
-      if (f.deps) t.deps = f.deps.filter((d) => d !== op.id);
+      if (typeof f.ask === 'boolean') { if (f.ask) t.ask = true; else delete t.ask; }
+      if (f.deps) { t.deps = f.deps.filter((d) => d !== op.id); shaped = true; }
       changed.add(op.id);
     } else if (op?.op === 'removeTask') {
       if (!known(op.id)) { reject(op, 'unknown task'); continue; }
@@ -81,11 +95,13 @@ export function applyOps(current: Record<string, TaskSpec>, states: Record<strin
       delete tasks[op.id];
       for (const t of Object.values(tasks)) t.deps = t.deps.filter((d) => d !== op.id);
       removed.add(op.id);
+      shaped = true;
     } else if (op?.op === 'addDep' || op?.op === 'removeDep') {
       if (!known(op.from) || !known(op.to)) { reject(op, 'unknown task'); continue; }
       const t = tasks[op.to];
       t.deps = op.op === 'addDep' ? [...new Set([...t.deps, op.from])] : t.deps.filter((d) => d !== op.from);
       changed.add(op.to);
+      shaped = true;
     } else {
       reject(op, 'unknown op');
       continue;
@@ -96,6 +112,7 @@ export function applyOps(current: Record<string, TaskSpec>, states: Record<strin
       reject(op, 'would create a cycle');
     }
   }
+  const moved = shaped ? relayout(tasks) : [];   // positions only: written, but not reported as changes
   const changedIds = [...changed].filter((id) => id in tasks);
-  return { tasks, changedIds, removed: [...removed], rejected };
+  return { tasks, changedIds, moved, removed: [...removed], rejected };
 }

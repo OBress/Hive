@@ -1,14 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  applyNodeChanges, Background, BackgroundVariant, Controls, MarkerType, ReactFlow, useReactFlow,
+  applyNodeChanges, Background, BackgroundVariant, ControlButton, Controls, MarkerType, ReactFlow, useNodesInitialized, useReactFlow,
   type Connection, type Edge, type EdgeChange, type NodeChange,
 } from '@xyflow/react';
+import { layoutGraph, NODE_H, overlaps } from '@hive/shared/layout';
 import '@xyflow/react/dist/style.css';
 import { usePeers } from '@/lib/hive';
 import { taskMatches } from '@/lib/mentions';
-import { addEdge, moveTask, removeEdge, useHive } from '@/lib/mock';
+import { addEdge, moveTask, moveTasks, removeEdge, useHive } from '@/lib/mock';
 import TaskNode, { type TaskNodeType } from './TaskNode';
 
 const nodeTypes = { task: TaskNode };
@@ -79,6 +80,24 @@ export default function Graph({ me, selected, onSelect, query, showDone }: {
 
   const onConnect = useCallback((c: Connection) => addEdge(c.source, c.target, me), [me]);
 
+  // Cards never overlap: when tasks or links change and any two visible cards (at their real, measured
+  // heights) overlap, lay the whole graph out again, top to bottom (shared/layout.ts, the same as the server).
+  // Never on drags, so it doesn't fight a person moving cards. The Tidy button does it on demand.
+  const measured = useNodesInitialized();
+  const shape = Object.values(s.tasks).map((t) => `${t.id}<${t.dependsOn.join('|')}`).sort().join(',');
+  const tidied = useRef('');
+  const tidy = useCallback(() => {
+    const h = new Map(rf.getNodes().map((n) => [n.id, n.measured?.height ?? NODE_H]));
+    moveTasks(layoutGraph(Object.values(s.tasks).map((t) => ({ id: t.id, deps: t.dependsOn })), (id) => h.get(id) ?? NODE_H));
+    setTimeout(() => rf.fitView({ padding: 0.22, duration: 500, maxZoom: 1.05 }), 50);
+  }, [rf, s.tasks]);
+  useEffect(() => {
+    if (!measured || !shape || tidied.current === shape) return;
+    tidied.current = shape;
+    const boxes = rf.getNodes().map((n) => ({ x: n.position.x, y: n.position.y, h: n.measured?.height ?? NODE_H }));
+    if (overlaps(boxes)) tidy();
+  }, [measured, shape, rf, tidy]);
+
   // Zoom to fit as the Planner adds nodes.
   const count = nodes.length;
   useEffect(() => {
@@ -103,7 +122,11 @@ export default function Graph({ me, selected, onSelect, query, showDone }: {
       defaultEdgeOptions={{ type: 'default' }}
     >
       <Background variant={BackgroundVariant.Dots} gap={28} size={2.4} color="rgba(20,18,26,0.16)" />
-      <Controls showInteractive={false} position="bottom-right" />
+      <Controls showInteractive={false} position="bottom-right">
+        <ControlButton onClick={tidy} title="Tidy: lay the graph out again" aria-label="Tidy the graph layout">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6v4H4zM14 5h6v4h-6zM9 15h6v4H9zM7 9v3h10V9M12 12v3" fill="none" stroke="currentColor" strokeWidth="2.2" /></svg>
+        </ControlButton>
+      </Controls>
     </ReactFlow>
   );
 }

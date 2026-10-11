@@ -10,8 +10,16 @@ export interface TaskSpec {          // ydoc.getMap('tasks'): written by browser
   x: number; y: number;              // position on the graph
   editedBy?: string;                 // who made the last edit (browsers set it)
   why?: string;                      // reason typed with the last spec change
+  ask?: boolean;                     // Semi-auto: wait for a person's OK (Start) before an agent starts it
   createdBy: string;
 }
+
+// How much agents do on their own (Project.mode; unset means 'auto').
+//   manual  nothing starts unless a person starts it; no goal checks
+//   semi    ready tasks start by themselves, except tasks marked `ask`; goal-check follow-ups need an OK
+//   auto    every ready task starts; when all are done the planner checks the goal (tests, a screenshot)
+//           and adds follow-up tasks, a few rounds at most
+export type AutonomyMode = 'manual' | 'semi' | 'auto';
 
 export interface Project {           // GET /api/projects; the registry lives on the server (data/projects.json)
   id: string;                        // also the Y.Doc name and the folder under data/projects/
@@ -22,6 +30,8 @@ export interface Project {           // GET /api/projects; the registry lives on
   createdAt: string;
   sharedWith: string[];              // logins (GitHub when signed in) who can see and work on it besides createdBy
   stack?: string;                    // approved stack / spec doc (Markdown); the planner and agents read it
+  mode?: AutonomyMode;               // unset = 'auto'
+  modeSetBy?: string;                // who chose the mode (unset: the default)
 }
 
 export interface UserSummary {       // GET /api/users: people who have signed in to this Hive server
@@ -55,7 +65,8 @@ export interface SessionView {       // ydoc.getMap('sessions'): server only; th
 export type StepKind =
   | 'plan' | 'read' | 'edit' | 'test' | 'finish'
   | 'steer' | 'spec-change' | 'takeover' | 'human-edit' | 'handback' | 'handoff'
-  | 'merge' | 'error' | 'approve';
+  | 'merge' | 'error' | 'approve'
+  | 'mode' | 'check';                // mode change; goal check (tests on main, a screenshot, the planner's verdict)
 
 export interface Step {              // ydoc.getArray('steps'): server only, append-only
   id: string; n: number;             // n: global order
@@ -67,6 +78,7 @@ export interface Step {              // ydoc.getArray('steps'): server only, app
   diff?: string;                     // unified diff, trimmed to 4,000 chars
   test?: { passed: number; failed: number; output: string };
   commit?: string;                   // short hash
+  image?: string;                    // goal-check screenshot: GET /api/projects/<id>/<image>
   at: string;
 }
 

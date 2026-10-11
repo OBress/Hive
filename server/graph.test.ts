@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 import type { TaskSpec, TaskState } from '@hive/shared/types';
-import { applyOps, hasCycle, readyTasks, topoOrder } from './graph.ts';
+import { NODE_H, overlaps } from '@hive/shared/layout';
+import { applyOps, autoStartable, hasCycle, readyTasks, topoOrder, waitingForOk } from './graph.ts';
 
 const t = (id: string, deps: string[] = [], x = 0): TaskSpec => ({ id, title: id, spec: `${id} spec`, deps, x, y: 40, createdBy: 'seed' });
 const base = () => ({ store: t('store'), redirect: t('redirect', ['store'], 280), stats: t('stats', ['redirect'], 560) });
@@ -26,10 +27,29 @@ test('a dependency is added', () => {
   expect(r.changedIds).toEqual(['stats']);
 });
 
-test('a duplicate id is renamed and placed right of its dependency', () => {
+test('a duplicate id is renamed and laid out one row below its dependency', () => {
   const r = applyOps(base(), {}, [{ op: 'addTask', task: { id: 'stats', title: 'Unique stats', spec: 'x', deps: ['stats'] } }]);
   expect(r.changedIds).toEqual(['stats-2']);
-  expect(r.tasks['stats-2']).toMatchObject({ deps: ['stats'], x: 840, createdBy: 'planner' });
+  expect(r.tasks['stats-2']).toMatchObject({ deps: ['stats'], createdBy: 'planner' });
+  expect(r.tasks['stats-2'].y).toBeGreaterThan(r.tasks.stats.y);
+});
+
+test('the layout never overlaps cards, even side by side', () => {
+  const r = applyOps({}, {}, ['a', 'b', 'c', 'd', 'e'].map((id, i) => ({ op: 'addTask', task: { id, title: id, spec: 's', deps: i ? ['a'] : [] } })));
+  const boxes = Object.values(r.tasks).map((t) => ({ x: t.x, y: t.y, h: NODE_H }));
+  expect(overlaps(boxes)).toBe(false);
+  expect(new Set(Object.values(r.tasks).filter((t) => t.id !== 'a').map((t) => t.y)).size).toBe(1);   // one row
+  expect(overlaps([{ x: 0, y: 0, h: 130 }, { x: 0, y: 120, h: 130 }])).toBe(true);
+});
+
+test('modes decide which ready tasks start by themselves', () => {
+  const tasks = { a: t('a'), b: { ...t('b'), ask: true } };
+  const states = { a: st('a', 'todo'), b: st('b', 'todo') };
+  expect(autoStartable(tasks, states, 'manual')).toEqual([]);
+  expect(autoStartable(tasks, states, 'semi')).toEqual(['a']);
+  expect(waitingForOk(tasks, states, 'semi')).toEqual(['b']);
+  expect(autoStartable(tasks, states, 'auto').sort()).toEqual(['a', 'b']);
+  expect(waitingForOk(tasks, states, 'auto')).toEqual([]);
 });
 
 test('unknown ids and running removals are rejected', () => {
