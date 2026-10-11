@@ -12,7 +12,9 @@
     "@anthropic-ai/sdk": "^0.128.0",
     "@hive/shared": "workspace:*",
     "@hocuspocus/server": "^4.7.0",
+    "@supabase/supabase-js": "^2.117.3",
     "express": "^5.2.1",
+    "mongodb": "^7.7.0",
     "yjs": "^13.6.33"
   },
   "devDependencies": {
