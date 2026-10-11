@@ -2,24 +2,23 @@
 //! loading line, a particle burst, a zoom that dives into the glyphs, glyphs resolving into the
 //! real page, glyph-block wipes between light and dark, a ticking counter, and a closing zoom
 //! out to a mosaic of real Hive screens that fly into giant letters.
+//! The product demo in the middle is real app footage (`demo`); the animated workspace scenes
+//! (plan, stale, conflict, memory, ship) are kept for reference but no longer in the cut.
+#![allow(dead_code)]
 
-use crate::ascii::{self, Canvas, Grid, HERO};
+use crate::ascii::{self, Canvas, Grid};
 use crate::ease::*;
 use crate::ui::*;
-use crate::workspace::{self, LW};
-use crate::{Kind, cue, cue_end, cue_n, seg_end, seg_start};
-use fframes::{FFramesContext, Frame, Svgr};
+use crate::workspace;
+use crate::{DEMO, Kind, cue, cue_n, demo_end, seg_start};
+use fframes::{FFramesContext, FFramesSyncedVideoFrame, Frame, Svgr, SyncVideoFrameInput};
 
-pub fn render<'a>(kind: Kind, t: f32, _frame: Frame, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
+pub fn render<'a>(kind: Kind, t: f32, frame: Frame, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
     match kind {
         Kind::Hook => hook(t),
         Kind::Problem => problem(t),
         Kind::Intro => intro(t, ctx),
-        Kind::Plan => plan(t),
-        Kind::Steer | Kind::Stale => with_chapter(t, workspace::render(t)),
-        Kind::Conflict => conflict_out(t),
-        Kind::Memory => memory(t),
-        Kind::Ship => ship(t),
+        Kind::Demo(i) => demo(i, t, &frame, ctx),
         Kind::Outro => outro(t, ctx),
     }
 }
@@ -446,159 +445,128 @@ fn problem(t: f32) -> Svgr<'static> {
 // ---------------------------------------------------------------- intro
 
 /// "Hive fixes that: one live task graph where your whole team and its agents build together."
-/// Small glyphs condense into a lit 3D Hive mark, a loading line fills, the mark snaps into the
-/// logo, the real landing page resolves out of a glyph field, then the camera dives into
-/// "Join the workspace".
+/// A 3D Hive mark spins in the glyph field while a loading line fills, the camera dives into its
+/// center and the real landing page opens out of it, then Ana types her name and joins: the
+/// orange of the button floods the screen and the demo starts on her laptop.
 fn intro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
     let s0 = seg_start("intro") - 0.2;
-    let one = cue("intro", "one");
-    let live = cue("intro", "live");
-    let graph = cue("intro", "graph");
-    let whole = cue("intro", "whole");
-    let together = cue_end("intro", "together");
     let end = seg_start("plan") - 0.2;
-    let snap = s0 + 0.85;
+    let r = t - s0;
     let tick = (t * 12.0) as u32;
 
-    // 1. lit 3D mark out of the glyph field
-    let g = Grid::screen(16.0);
-    let spin = expo_out(prog(t, s0, snap));
-    let yaw = (1.0 - spin) * std::f32::consts::PI * 2.6;
-    let pitch = (1.0 - spin) * 0.5;
-    let condense = smooth(s0, s0 + 0.45, t);
-    let hex_out = smooth(snap, snap + 0.18, t);
-    let mark = if hex_out < 1.0 {
-        let scale = 300.0;
-        let el = ascii::render(&g, &[HOT, CREAM], tick, 0.06, |c, r| {
-            let (px, py) = g.center(c, r);
+    // 1. the glyph logo spins, then the camera dives into its middle
+    let dive = expo_in(prog(r, 1.35, 2.3));
+    let open = in_out(prog(r, 1.9, 2.6));
+    let mark = if open < 1.0 {
+        let g = Grid::screen(16.0);
+        let condense = smooth(0.0, 0.45, r);
+        // two full turns that slow down and land face-on just before the dive
+        let yaw = std::f32::consts::PI * 4.0 * expo_out(prog(r, 0.0, 1.65));
+        let pitch = 0.32 * (r * 1.4).sin() * (1.0 - in_out(prog(r, 0.9, 1.6)));
+        let scale = 300.0 * (1.0 + 0.12 * r) * (1.0 + 16.0 * dive);
+        let el = ascii::render(&g, &[HOT, CREAM], tick, 0.06, |c, rr| {
+            let (px, py) = g.center(c, rr);
             let hit = ascii::logo3d((px - 960.0) / scale, (py - 500.0) / scale, yaw, pitch);
-            let n = noise(c, r);
+            let n = noise(c, rr);
             match hit {
                 Some((v, m)) if n < condense.max(0.05) || condense >= 1.0 => (v, m),
                 Some(_) => (0.5 * (1.0 - condense), 1),
                 None => {
-                    if n > condense && hash2((c * 3 + r) as u32, 5) < 0.55 { (0.55 * (1.0 - condense), 1) } else { (0.0, 0) }
+                    if n > condense && hash2((c * 3 + rr) as u32, 5) < 0.55 { (0.55 * (1.0 - condense), 1) } else { (0.0, 0) }
                 }
             }
         });
-        fframes::svgr!(<g opacity={1.0 - hex_out}>{el}</g>)
+        fframes::svgr!(<g opacity={1.0 - open}>{el}</g>)
     } else {
         Svgr::empty()
     };
-    let load = loading(860.0, 520.0, ease(prog(t, s0 + 0.05, snap)), "INITIALIZING HIVE", 1.0 - smooth(snap + 0.1, snap + 0.35, t));
+    let load = loading(860.0, 520.0, ease(prog(r, 0.05, 1.5)), "INITIALIZING HIVE", 1.0 - smooth(1.45, 1.75, r));
 
-    // 2. crisp logo + wordmark
-    let wipe = in_out(prog(t, one - 0.2, live + 0.25));
-    let (lo_op, lo_sc, _) = pop_in(t, snap);
-    let logo_el = if t >= snap && wipe < 1.0 {
-        let k = lo_sc * (1.0 + 0.6 * wipe);
-        let word_in = pop(prog(t, snap + 0.12, snap + 0.5));
-        fframes::svgr!(
-            <g opacity={lo_op * (1.0 - wipe)} transform={format!("translate(960 540) scale({k}) translate(-960 -540)")}>
-                {logo(700.0, 430.0, 220.0)}
-                <g opacity={word_in.min(1.0)} transform={format!("translate({} 0)", 40.0 * (1.0 - word_in))}>
-                    <text x="950" y="610" font-family={DISPLAY} font-weight="800" font-size="190" letter-spacing="-8" fill={CREAM}>"Hive"</text>
-                </g>
-            </g>
-        )
-    } else {
-        Svgr::empty()
-    };
-
-    // 3. cream page grows out of the logo's inner hexagon; landing page as glyphs, then real
-    let page = if wipe > 0.0 {
-        let kk = lo_sc * (1.0 + 0.6 * wipe);
-        let (hx, hy) = (960.0 + (810.0 - 960.0) * kk, 540.0 + (546.0 - 540.0) * kk);
-        let radius = 45.0 * kk + 2300.0 * in_out(wipe);
+    // 2. the landing page opens out of the mark's center as a growing hexagon
+    let page = if open > 0.0 {
+        let radius = 30.0 + 2300.0 * open;
         let hex_pts: String = (0..6)
             .map(|i| {
                 let a = std::f32::consts::FRAC_PI_3 * i as f32 - std::f32::consts::FRAC_PI_2;
-                format!("{},{} ", hx + radius * a.cos(), hy + radius * a.sin())
+                format!("{},{} ", 960.0 + radius * a.cos(), 500.0 + radius * a.sin())
             })
             .collect();
-        let resolve = in_out(prog(t, graph - 0.2, whole + 0.1));
-        let materialize = smooth(one, live + 0.3, t);
-        let glyphs = if resolve < 1.0 {
-            let pg = Grid::screen(18.0);
-            ascii::render(&pg, &[INK, HOT], tick, 0.05, |c, r| {
-                let (px, py) = pg.center(c, r);
-                let lum = HERO.at(px / 1920.0, py / 1080.0);
-                let v = 1.0 - lum;
-                let block = hash2((px / 96.0) as u32, (py / 96.0) as u32);
-                if block < resolve || noise(c, r) > materialize {
-                    return (0.0, 0);
-                }
-                let v = if v < 0.04 { 0.0 } else { (v * 1.4).min(1.0) };
-                (v, if v > 0.0 && lum > 0.45 && v < 0.6 { 1 } else { 0 })
-            })
+        let settle = 1.0 + 0.08 * (1.0 - ease(prog(r, 1.9, 3.0)));
+        // a gentle push toward the name field so the typing reads (1.2x at most)
+        let push = in_out(prog(r, 2.6, 3.25));
+        let (fx, fy) = (mix(960.0, 800.0, push), mix(500.0, 580.0, push));
+        let z = settle * (1.0 + 0.2 * push);
+        let image = match ctx.get_image("hero.jpg").map(|i| i.href()) {
+            Some(href) => fframes::svgr!(<image href={href} x="0" y="0" width="1920" height="1080" />),
+            None => Svgr::empty(),
+        };
+
+        // 3. Ana clicks "Your name", types it, and joins
+        let (field_x, field_y) = (490.0, 616.0);
+        let (btn_x, btn_y) = (756.0, 616.0);
+        let click_field = 3.2;
+        let click_btn = 4.35;
+        let to_field = in_out(prog(r, 2.55, 3.1));
+        let to_btn = in_out(prog(r, 3.85, 4.25));
+        let (cx, cy) = (mix(mix(1380.0, field_x, to_field), btn_x, to_btn), mix(mix(930.0, field_y, to_field), btn_y + 6.0, to_btn));
+        let typed: String = "Ana".chars().take(((r - 3.35) / 0.15).clamp(0.0, 3.0) as usize).collect();
+        let focused = r >= click_field && r < click_btn + 0.1;
+        let field = if r >= click_field {
+            let caret = if focused && (r * 2.2).fract() < 0.6 { 1.0 } else { 0.0 };
+            let cw = display_w(&typed, 19.0);
+            fframes::svgr!(
+                <g>
+                    <rect x="384" y="586" width="214" height="61" rx="30.5" fill={PAPER} stroke={if focused { BLUE } else { INK }} stroke-width="3" />
+                    <text x="404" y="623" font-family={DISPLAY} font-weight="500" font-size="19" fill={INK}>{typed.clone()}</text>
+                    <rect x={405.0 + cw} y="603" width="2" height="26" fill={INK} opacity={caret} />
+                </g>
+            )
         } else {
             Svgr::empty()
         };
-        let blocks: Vec<Svgr> = if resolve > 0.0 && resolve < 1.0 {
-            let mut v = Vec::new();
-            for by in 0..12 {
-                for bx in 0..20 {
-                    if hash2(bx, by) < resolve {
-                        v.push(fframes::svgr!(<rect x={bx as f32 * 96.0} y={by as f32 * 96.0} width="96" height="96" />));
-                    }
-                }
-            }
-            v
+        let press = |at: f32| -> f32 { if r >= at && r < at + 0.14 { 0.86 } else { 1.0 } };
+        let cursor = if r >= 2.5 {
+            let k = press(click_field).min(press(click_btn));
+            fframes::svgr!(
+                <g opacity={smooth(2.5, 2.7, r)} transform={format!("translate({cx} {cy}) scale({k})")}>
+                    <path d="M0 0 L0 34 L9 26.5 L15.5 40 L21.5 37.5 L15.5 24.5 L27 24.5 Z" fill={INK} stroke={PAPER} stroke-width="2.4" stroke-linejoin="round" />
+                </g>
+            )
         } else {
-            Vec::new()
+            Svgr::empty()
         };
-        let image = match ctx.get_image("hero.jpg").map(|i| i.href()) {
-            Some(href) if resolve > 0.0 => {
-                if resolve >= 1.0 {
-                    fframes::svgr!(<image href={href} x="0" y="0" width="1920" height="1080" />)
-                } else {
-                    fframes::svgr!(
-                        <g>
-                            <defs><clipPath id="hero-blocks">{blocks}</clipPath></defs>
-                            <image href={href} x="0" y="0" width="1920" height="1080" clip-path="url(#hero-blocks)" />
-                        </g>
-                    )
-                }
-            }
-            _ => Svgr::empty(),
+        // the button's orange floods out and becomes the demo's first frame
+        let flood = in_out(prog(r, click_btn + 0.08, end - s0));
+        let flood_el = if flood > 0.0 {
+            { let (sx, sy) = (960.0 + (btn_x - fx) * z, 500.0 + (btn_y - fy) * z); fframes::svgr!(<circle cx={sx} cy={sy} r={20.0 + 2300.0 * flood} fill={HOT} />) }
+        } else {
+            Svgr::empty()
         };
-        // push toward the task graph, then whip into the orange "Join the workspace" button
-        let push = in_out(prog(t, whole - 0.2, together - 0.1));
-        let dive = expo_in(prog(t, together - 0.15, end));
-        let whip = in_out(prog(t, together - 0.2, end));
-        let (gx, gy) = (1260.0, 420.0);
-        let (bx, by) = (758.0, 622.0);
-        let fx = mix(mix(960.0, gx, push * 0.6), bx, whip);
-        let fy = mix(mix(540.0, gy, push * 0.6), by, whip);
-        let zoom = (1.0 + 0.22 * push) * (1.0 + 30.0 * dive);
-        let tr = format!("translate(960 540) scale({zoom}) translate({} {})", -fx, -fy);
         fframes::svgr!(
             <g>
                 <defs><clipPath id="wipe"><polygon points={hex_pts} /></clipPath></defs>
                 <g clip-path="url(#wipe)">
-                    <g transform={tr}>
+                    <g transform={format!("translate(960 500) scale({z}) translate({} {})", -fx, -fy)}>
                         <rect width="1920" height="1080" fill={CREAM} />
-                        {dots(0.0, 0.0, 1920.0, 1080.0, 28.0, INK, 0.12)}
-                        {glyphs}
                         {image}
+                        {field}
+                        {cursor}
                     </g>
+                    {flood_el}
                 </g>
             </g>
         )
     } else {
         Svgr::empty()
     };
-    let orange = smooth(end - 0.12, end, t);
     fframes::svgr!(
         <g>
             <rect width="1920" height="1080" fill={INK} />
             {dots(0.0, 0.0, 1920.0, 1080.0, 28.0, CREAM, 0.06)}
             {mark}
             {load}
-            <g opacity={1.0 - wipe}>{crt(1.0)}{hud(t, "HIVE // ONLINE", 1.0 - smooth(snap, snap + 0.4, t))}</g>
-            {logo_el}
+            <g opacity={1.0 - open}>{crt(1.0)}{hud(t, "HIVE // ONLINE", 1.0 - smooth(1.4, 1.8, r))}</g>
             {page}
-            <rect width="1920" height="1080" fill={HOT} opacity={orange} />
         </g>
     )
 }
@@ -609,11 +577,10 @@ fn intro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
 fn chapters() -> Vec<(&'static str, &'static str, &'static str, &'static str, f32, f32)> {
     vec![
         ("01", "ONE MESSAGE → A TASK GRAPH", BLUE, "#ffffff", seg_start("plan") + 0.1, seg_start("plan") + 3.4),
-        ("02", "STEER · TAKE OVER · HAND BACK", PAPER, INK, seg_start("steer") - 0.1, seg_start("steer") + 2.8),
-        ("03", "CHANGE YOUR MIND MID-BUILD", HOT, INK, seg_start("stale") - 0.1, seg_start("stale") + 2.8),
-        ("04", "CONFLICTS, SETTLED BY TESTS", GREEN, INK, seg_start("conflict") - 0.1, seg_start("conflict") + 2.8),
-        ("05", "EVERY DECISION, RECORDED", HOT, INK, seg_start("memory") + 0.5, seg_start("memory") + 3.2),
-        ("06", "GREEN → SHIPPED", GREEN, INK, seg_start("ship") - 0.1, seg_start("ship") + 2.6),
+        ("02", "LIVE ON EVERY SCREEN", PAPER, INK, seg_start("sync") - 0.1, seg_start("sync") + 2.8),
+        ("03", "AGENTS BUILD IN THE OPEN", GREEN, INK, seg_start("run") - 0.1, seg_start("run") + 2.8),
+        ("04", "REDIRECT AN AGENT MID-RUN", HOT, INK, seg_start("steer") - 0.1, seg_start("steer") + 2.8),
+        ("05", "TAKE OVER · HAND BACK", PAPER, INK, seg_start("takeover") - 0.1, seg_start("takeover") + 2.8),
     ]
 }
 
@@ -873,26 +840,13 @@ const PITCH_Y: f32 = 1300.0;
 
 /// What a tile shows: a real Hive screen at some moment of the video.
 fn tile_body<'a>(i: usize, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
-    let moments = [
-        seg_start("plan") + 8.0,
-        seg_start("steer") + 4.0,
-        seg_start("stale") + 5.5,
-        seg_start("conflict") + 5.8,
-        seg_start("ship") + 3.4,
-        seg_start("plan") + 1.0,
-        seg_start("steer") + 1.5,
-        seg_start("stale") + 9.5,
-    ];
-    match i % 10 {
-        8 => match ctx.get_image("hero.jpg").map(|im| im.href()) {
-            Some(href) => fframes::svgr!(<image href={href} x="0" y="0" width="1920" height="1080" />),
-            None => Svgr::empty(),
-        },
-        9 => memory_body(seg_start("memory") + 5.5),
-        k => {
-            let k_ws = 1920.0 / LW;
-            fframes::svgr!(<g transform={format!("scale({k_ws})")}>{workspace::layout(moments[k])}</g>)
-        }
+    let name = match i % 10 {
+        8 => "hero.jpg".to_owned(),
+        k => format!("still_{k}.jpg"),
+    };
+    match ctx.get_image(&name).map(|im| im.href()) {
+        Some(href) => fframes::svgr!(<image href={href} x="0" y="0" width="1920" height="1080" />),
+        None => fframes::svgr!(<rect width="1920" height="1080" fill={PAPER} />),
     }
 }
 
@@ -900,11 +854,12 @@ fn tile_body<'a>(i: usize, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
 /// tiles fly into giant letters, the camera pans across "HIVE", then a cream hexagon opens on
 /// the logo and the name.
 fn outro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
-    let t0 = seg_end("ship") + 0.35;
+    let t0 = demo_end();
     let hive_said = cue("outro", "Hive");
     let humans = cue("outro", "Humans");
-    let one = cue("outro", "one");
-    let graph_said = cue_end("outro", "graph");
+    // hold the glyph "HIVE" a beat before the lockup, however the line is voiced
+    let lock_at = humans.max(hive_said + 1.9);
+    let tick = (t * 12.0) as u32;
 
     let mut slots = Vec::new();
     for (li, letter) in LETTERS.iter().enumerate() {
@@ -934,7 +889,7 @@ fn outro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
     let cam_y = 0.0;
     let to_screen = |wx: f32, wy: f32| (960.0 + (wx - cam_x) * cam_s, 540.0 + (wy - cam_y) * cam_s);
 
-    let resolve = in_out(prog(t, humans - 0.35, humans + 0.35));
+    let resolve = in_out(prog(t, lock_at - 0.35, lock_at + 0.35));
     let mut cells: Vec<(i32, i32)> = (-4..=4).flat_map(|x| (-3..=3).map(move |y| (x, y))).collect();
     cells.sort_by(|a, b| {
         let da = (a.0 * a.0) as f32 * 0.6 + (a.1 * a.1) as f32 + hash((a.0 * 13 + a.1 * 7 + 100) as u32) * 0.5;
@@ -961,8 +916,8 @@ fn outro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
         }
         let rot = if i == 0 { 0.0 } else { (1.0 - f) * (hash(i as u32 + 99) - 0.5) * 16.0 };
         let body = if i == 0 && f <= 0.0 {
-            // the live workspace, exactly where the ship scene left it
-            fframes::svgr!(<g transform={format!("scale({})", 1920.0 / LW)}>{workspace::layout(t0)}</g>)
+            // the "Nothing gets lost" frame, exactly as it ended
+            saved(DEMO[5].2, DEMO[5].2)
         } else if k * TILE_W > 70.0 {
             tile_body(i, ctx)
         } else {
@@ -981,8 +936,37 @@ fn outro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
         ));
     }
 
+    // the tiles dissolve into a dense glyph "HIVE", like the opening's glyph field
+    let dense = in_out(prog(t, hive_said + 0.05, hive_said + 0.6));
+    let glyph_word = if dense > 0.0 && wipe_pre(t, lock_at) < 1.0 {
+        let g = Grid::screen(9.0);
+        let gs = cam_s * (1.0 + 0.04 * prog(t, hive_said, lock_at + 0.5));
+        let el = ascii::render(&g, &[CREAM, HOT], tick, 0.08, |c, rr| {
+            let (px, py) = g.center(c, rr);
+            let wx = cam_x + (px - 960.0) / gs;
+            let wy = cam_y + (py - 540.0) / gs;
+            let lx = (wx - word_origin.0) / PITCH_X + 0.5;
+            let ly = (wy - word_origin.1) / PITCH_Y + 0.5;
+            let inside = lx >= 0.0 && ly >= 0.0 && {
+                let (ci, ri) = (lx as usize, ly as usize);
+                ri < 7 && ci < 23 && ci % 6 < 5 && LETTERS[ci / 6][ri].as_bytes()[ci % 6] == b'X'
+            };
+            let h = hash2((c * 7 + rr) as u32, 11);
+            if inside {
+                if noise(c, rr) < dense { (0.7 + 0.3 * h, if h < 0.28 { 1 } else { 0 }) } else { (0.0, 0) }
+            } else if h < 0.05 * dense {
+                (0.22, 1)
+            } else {
+                (0.0, 0)
+            }
+        });
+        fframes::svgr!(<g opacity={dense}>{el}{crt(0.8 * dense)}</g>)
+    } else {
+        Svgr::empty()
+    };
+
     // crisp lockup inside a cream hexagon opening from the center
-    let wipe = in_out(prog(t, humans - 0.15, humans + 0.55));
+    let wipe = in_out(prog(t, lock_at - 0.15, lock_at + 0.55));
     let hex_r = 2400.0 * wipe;
     let hex_pts: String = (0..6)
         .map(|i| {
@@ -990,12 +974,16 @@ fn outro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
             format!("{},{} ", 960.0 + hex_r * a.cos(), 540.0 + hex_r * a.sin())
         })
         .collect();
-    let (lo, ls, _) = pop_in(t, humans + 0.1);
-    let settle_zoom = 1.0 + 0.04 * prog(t, humans, graph_said + 2.5);
+    let (lo, ls, _) = pop_in(t, lock_at + 0.1);
+    let settle_zoom = 1.0 + 0.04 * prog(t, lock_at, lock_at + 3.0);
     let lockup = if wipe > 0.0 {
-        let tagline = if t >= one {
-            let (op, sc, dy) = pop_in(t, one);
-            let label = "Humans + agents, one graph";
+        // "people" and "build" exist once the new outro line is voiced; until then the
+        // lines follow "Humans"
+        let tag_at = cue("outro", "people").max(lock_at + 0.5);
+        let world_at = cue("outro", "build").max(tag_at + 0.9);
+        let tagline = if t >= tag_at {
+            let (op, sc, dy) = pop_in(t, tag_at);
+            let label = "Humans + AI agents, building together";
             let w = display_w(label, 46.0) + 70.0;
             let (x, y) = (960.0 - w / 2.0, 640.0);
             fframes::svgr!(
@@ -1007,7 +995,8 @@ fn outro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
         } else {
             Svgr::empty()
         };
-        let line = smooth(graph_said, graph_said + 0.5, t);
+        let (wo, _, wdy) = pop_in(t, world_at);
+        let world = if t >= world_at { wo } else { 0.0 };
         fframes::svgr!(
             <g>
                 <defs><clipPath id="end-wipe"><polygon points={hex_pts} /></clipPath></defs>
@@ -1020,7 +1009,7 @@ fn outro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
                             <text x="800" y="505" font-family={DISPLAY} font-weight="800" font-size="210" letter-spacing="-9" fill={INK}>"Hive"</text>
                         </g>
                         {tagline}
-                        <text x="960" y="860" text-anchor="middle" font-family={MONO} font-weight="700" font-size="26" letter-spacing="5" fill={INK} opacity={line * 0.75}>"ONE LIVE TASK GRAPH FOR YOUR WHOLE TEAM"</text>
+                        <text x="960" y={835.0 + wdy} text-anchor="middle" font-family={DISPLAY} font-weight="700" font-size="44" letter-spacing="-1" fill={INK} opacity={world}>"The collaborative workspace for teams shipping with AI."</text>
                     </g>
                 </g>
             </g>
@@ -1028,14 +1017,314 @@ fn outro<'a>(t: f32, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
     } else {
         Svgr::empty()
     };
-    let label = 1.0 - smooth(humans - 0.4, humans, t);
+    let label = 1.0 - smooth(lock_at - 0.4, lock_at, t);
     fframes::svgr!(
         <g>
             <rect width="1920" height="1080" fill={INK} />
             {dots(0.0, 0.0, 1920.0, 1080.0, 28.0, CREAM, 0.06 * zoom_out)}
-            {tiles}
+            <g opacity={1.0 - dense}>{tiles}</g>
+            {glyph_word}
             <g opacity={label * zoom_out}>{hud(t, "HIVE // EVERY SCREEN", 1.0)}</g>
             {lockup}
+        </g>
+    )
+}
+
+// ---------------------------------------------------------------- demo (real app footage)
+
+/// Whose browser each demo clip was recorded in.
+const DEMO_WHO: [(&str, &str); 5] = [("Ana", HOT), ("", ""), ("Ana", HOT), ("Ben", BLUE), ("Maya", GREEN)];
+
+/// The current frame of a recording in footage/, drawn into (x, y, w, h). Clips start with
+/// their shot.
+fn clip<'a>(frame: &Frame, ctx: &FFramesContext<'a, '_>, file: &str, x: f32, y: f32, w: f32, h: f32) -> Svgr<'a> {
+    let input = SyncVideoFrameInput { start_from: 0.0, looping: false, editor_fallback_image: None };
+    match frame.get_synced_video_frame(ctx, file, &input) {
+        Some(c) => {
+            let img = c.into_image();
+            fframes::svgr!(<image href={img.href()} x={x} y={y} width={w} height={h} preserveAspectRatio="xMidYMid slice" />)
+        }
+        None => Svgr::empty(),
+    }
+}
+
+/// "ANA'S SCREEN": whose browser this is.
+fn screen_tag(x: f32, y: f32, who: &str, color: &str) -> Svgr<'static> {
+    let (st, _) = sticker(x, y, &format!("{}'S SCREEN", who.to_uppercase()), 18.0, PAPER, INK, Some(color), 3.0, 2.5);
+    st
+}
+
+type Rect = (f32, f32, f32, f32);
+
+/// A person's screen at its recorded size (1600x900, pixel for pixel), centered.
+const FULL: Rect = (160.0, 90.0, 1600.0, 900.0);
+/// The whole frame, where the outro's mosaic picks up.
+const BLEED: Rect = (0.0, 0.0, 1920.0, 1080.0);
+
+/// The three laptops side by side: Ana's, Ben's and Maya's screens.
+fn split_rect(k: usize) -> Rect {
+    let gap = 44.0;
+    let w = (1920.0 - 4.0 * gap) / 3.0;
+    (gap + k as f32 * (w + gap), 330.0, w, w * 9.0 / 16.0)
+}
+
+fn lerp_rect(a: Rect, b: Rect, p: f32) -> Rect {
+    (mix(a.0, b.0, p), mix(a.1, b.1, p), mix(a.2, b.2, p), mix(a.3, b.3, p))
+}
+
+const PEOPLE: [(&str, &str); 3] = [("Ana", HOT), ("Ben", BLUE), ("Maya", GREEN)];
+/// Whose laptop each demo clip was recorded on (the split view shows all three).
+const POV: [usize; 6] = [0, 0, 0, 1, 2, 2];
+
+/// One person's screen as a laptop window: content scaled into the rect, ink outline, a hard
+/// shadow in their color, and "<name>'s laptop" underneath (`label` fades it).
+fn laptop<'a>(r: Rect, who: usize, content: Svgr<'a>, label: f32, id: &str) -> Svgr<'a> {
+    let (x, y, w, h) = r;
+    let (name, color) = PEOPLE[who];
+    let rx = 18.0 * (w / 1600.0).max(0.5);
+    let lsize = if w > 1000.0 { 34.0 } else { 30.0 };
+    let text = format!("{name}'s laptop");
+    let lw = display_w(&text, lsize) + 34.0;
+    let ly = y + h + if w > 1000.0 { 52.0 } else { 56.0 };
+    fframes::svgr!(
+        <g>
+            <rect x={x + 8.0} y={y + 8.0} width={w} height={h} rx={rx} fill={s(color)} />
+            <defs><clipPath id={format!("lap-{id}")}><rect x={x} y={y} width={w} height={h} rx={rx} /></clipPath></defs>
+            <g clip-path={format!("url(#lap-{id})")}>
+                <rect x={x} y={y} width={w} height={h} fill={PAPER} />
+                <g transform={format!("translate({x} {y}) scale({})", w / 1600.0)}>{content}</g>
+            </g>
+            <rect x={x} y={y} width={w} height={h} rx={rx} fill="none" stroke={CREAM} stroke-width="3" />
+            <g opacity={label}>
+                <circle cx={x + w / 2.0 - lw / 2.0 + 10.0} cy={ly - lsize * 0.34} r={lsize * 0.3} fill={s(color)} />
+                <text x={x + w / 2.0 - lw / 2.0 + 30.0} y={ly} font-family={DISPLAY} font-weight="700" font-size={lsize} fill={CREAM}>{text}</text>
+            </g>
+        </g>
+    )
+}
+
+/// A recording from footage/ at its native 1600x900 (the laptop scales it into place).
+fn rec<'a>(frame: &Frame, ctx: &FFramesContext<'a, '_>, file: &str) -> Svgr<'a> {
+    clip(frame, ctx, file, 0.0, 0.0, 1600.0, 900.0)
+}
+
+fn still_img<'a>(ctx: &FFramesContext<'a, '_>, name: &str) -> Svgr<'a> {
+    match ctx.get_image(name).map(|im| im.href()) {
+        Some(href) => fframes::svgr!(<image href={href} width="1600" height="900" />),
+        None => Svgr::empty(),
+    }
+}
+
+/// What is happening, in plain words, and who is doing it: (from, text, person color).
+const CAPTIONS: [&[(f32, &str, &str)]; 6] = [
+    &[(0.4, "Ana describes what she wants built", HOT), (5.0, "Hive's AI breaks it into a plan of tasks", BLUE)],
+    &[],
+    &[(0.7, "One click, and AI agents start writing the code", BLUE)],
+    &[(1.2, "Ben tells the agent: \"count unique visitors, not hits\"", BLUE), (6.9, "The agent replies and changes its approach", BLUE)],
+    &[(1.2, "Maya pauses the agent and edits the code herself", GREEN), (6.0, "Then the agent picks up where she left off", BLUE)],
+    &[],
+];
+
+/// Caption in the top margin; swaps with a quick fade.
+fn caption(i: usize, local: f32, until_all: f32) -> Svgr<'static> {
+    let list = CAPTIONS[i];
+    let Some(k) = list.iter().rposition(|c| local >= c.0) else { return Svgr::empty() };
+    let (at, text, color) = list[k];
+    let until = list.get(k + 1).map(|c| c.0).unwrap_or(until_all);
+    let a = ease(prog(local, at, at + 0.35)) * (1.0 - ease(prog(local, until - 0.25, until)));
+    let dy = 12.0 * (1.0 - ease(prog(local, at, at + 0.35)));
+    let size = 40.0;
+    let w = display_w(text, size) + 100.0;
+    let x = 960.0 - w / 2.0;
+    let y = 10.0 - dy;
+    fframes::svgr!(
+        <g opacity={a}>
+            {card(x, y, w, 70.0, 35.0, PAPER, 0.0, INK, 0.0, false)}
+            <circle cx={x + 40.0} cy={y + 35.0} r="10" fill={s(color)} />
+            <text x={x + 64.0} y={y + 49.0} font-family={DISPLAY} font-weight="700" font-size={size} letter-spacing="-1" fill={INK}>{text.to_owned()}</text>
+        </g>
+    )
+}
+
+/// Real Hive, recorded live on three laptops. Every screen is shown pixel for pixel, never
+/// zoomed in. Whenever the view moves to another person, their screen shrinks back into the
+/// row of three laptops, the next person's laptop lights up and grows to full size: one shared
+/// project, many people.
+fn demo<'a>(i: usize, t: f32, frame: &Frame, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
+    let (id, file, secs) = DEMO[i];
+    let s0 = seg_start(id) - 0.2;
+    let local = t - s0;
+    let bg = fframes::svgr!(
+        <g>
+            <rect width="1920" height="1080" fill={INK} />
+            {dots(0.0, 0.0, 1920.0, 1080.0, 28.0, CREAM, 0.06)}
+        </g>
+    );
+
+    let body = if file == "mongo" {
+        saved(local, secs)
+    } else if file == "split" {
+        // in: Ana's laptop shrinks into the row; out: it grows back as the run starts
+        let into = in_out(prog(local, 0.0, 0.7));
+        let out = in_out(prog(local, secs - 0.6, secs));
+        let files = ["split_ana.mp4", "split_ben.mp4", "split_maya.mp4"];
+        let mut wins: Vec<Svgr> = (1..3)
+            .map(|k| {
+                let a = ease(prog(local, 0.35 + k as f32 * 0.1, 0.8 + k as f32 * 0.1)) * (1.0 - out);
+                let r = split_rect(k);
+                let r = (r.0, r.1 + 30.0 * (1.0 - a), r.2, r.3);
+                fframes::svgr!(<g opacity={a}>{laptop(r, k, rec(frame, ctx, files[k]), 1.0, &format!("s{k}"))}</g>)
+            })
+            .collect();
+        let ana_r = if out > 0.0 { lerp_rect(split_rect(0), FULL, out) } else { lerp_rect(FULL, split_rect(0), into) };
+        let ana_content = if into < 1.0 { still_img(ctx, "end_0.jpg") } else { rec(frame, ctx, files[0]) };
+        wins.push(laptop(ana_r, 0, ana_content, 1.0, "s0"));
+        let title_a = ease(prog(local, 0.45, 0.9)) * (1.0 - ease(prog(local, secs - 0.7, secs - 0.35)));
+        fframes::svgr!(
+            <g>
+                {bg}
+                <text x="960" y="200" text-anchor="middle" font-family={DISPLAY} font-weight="800" font-size="68" letter-spacing="-2.5" fill={CREAM} opacity={title_a}>"The whole team sees the same plan, live"</text>
+                {wins}
+            </g>
+        )
+    } else {
+        let who = POV[i];
+        // a new person (Ben, then Maya): hand over through the row of laptops
+        let handoff = i == 3 || i == 4;
+        let shrink = if handoff { in_out(prog(local, 0.0, 0.5)) } else { 1.0 };
+        let grow = if handoff { in_out(prog(local, 0.6, 1.15)) } else { 1.0 };
+        let row = 1.0 - grow;
+        // the last clip ends full-bleed, where the outro's mosaic takes over
+        let bleed = 0.0;
+        let mut wins = Vec::new();
+        if handoff && row > 0.0 {
+            let prev = POV[i - 1];
+            let prev_still = format!("end_{}.jpg", i - 1);
+            for k in 0..3 {
+                if k == who {
+                    continue;
+                }
+                let content = if k == prev { still_img(ctx, &prev_still) } else if k == 0 { still_img(ctx, "end_2.jpg") } else if k == 1 { still_img(ctx, "pov_ben.jpg") } else { still_img(ctx, "pov_maya.jpg") };
+                let (r, a) = if k == prev {
+                    (lerp_rect(FULL, split_rect(k), shrink), 1.0)
+                } else {
+                    (split_rect(k), ease(prog(local, 0.15, 0.5)))
+                };
+                wins.push(fframes::svgr!(<g opacity={a * row}>{laptop(r, k, content, ease(prog(local, 0.3, 0.6)), &format!("h{k}"))}</g>));
+            }
+        }
+        // the active person's laptop: lights up in the row, then grows to full size
+        let r = if handoff { lerp_rect(split_rect(who), FULL, grow) } else { FULL };
+        let r = lerp_rect(r, BLEED, bleed);
+        let pop_a = if handoff { ease(prog(local, 0.3, 0.6)) } else { 1.0 };
+        let ring = if handoff && row > 0.0 {
+            let (x, y, w, h) = r;
+            fframes::svgr!(<rect x={x - 10.0} y={y - 10.0} width={w + 20.0} height={h + 20.0} rx="24" fill="none" stroke={HOT} stroke-width="6" opacity={pop_a * row} />)
+        } else {
+            Svgr::empty()
+        };
+        wins.push(fframes::svgr!(<g opacity={pop_a}>{ring}{laptop(r, who, rec(frame, ctx, file), 1.0 - bleed, &format!("m{i}"))}</g>));
+        fframes::svgr!(
+            <g>
+                {bg}
+                {wins}
+                <g opacity={1.0 - bleed}>{caption(i, local, secs - 0.2)}</g>
+            </g>
+        )
+    };
+    // the intro ends on solid orange; the first clip comes out of it
+    let flash = if i == 0 { 1.0 - in_out(prog(t, s0, s0 + 0.8)) } else { 0.0 };
+    fframes::svgr!(
+        <g>
+            {body}
+            <rect width="1920" height="1080" fill={HOT} opacity={flash} />
+        </g>
+    )
+}
+
+/// The outro lockup's hexagon wipe progress at time t (used before it is computed).
+fn wipe_pre(t: f32, lock_at: f32) -> f32 {
+    in_out(prog(t, lock_at - 0.15, lock_at + 0.55))
+}
+
+/// "Nothing gets lost": real records from the run (Ana's request, the agent's reply to Ben,
+/// Maya's edit, the Planner's plan) drop into a MongoDB database, then what that buys you.
+fn saved(local: f32, secs: f32) -> Svgr<'static> {
+    let records = [
+        ("CHAT", "Ana", HOT, "Build a URL shortener API one step at a time…"),
+        ("AGENT STEP", "#st_42", BLUE, "Got it: Ben wants unique visitors counted…"),
+        ("EDIT", "Maya", GREEN, "Maya edited src/redirect.js"),
+        ("PLAN", "Planner", BLUE, "Planned it as a 4-step chain, with tests…"),
+    ];
+    let (dx, dy) = (1420.0, 560.0);
+    let mut cards = Vec::new();
+    for (k, (kind, who, color, text)) in records.iter().enumerate() {
+        let x0 = 170.0;
+        let y0 = 300.0 + k as f32 * 128.0;
+        let appear = pop(prog(local, 0.3 + k as f32 * 0.18, 0.8 + k as f32 * 0.18));
+        let fly = in_out(prog(local, 2.0 + k as f32 * 0.22, 2.7 + k as f32 * 0.22));
+        let (w, h) = (820.0, 100.0);
+        let x = mix(x0, dx - w * 0.1 / 2.0, fly);
+        let y = mix(y0, dy - 30.0, fly) - 60.0 * (4.0 * fly * (1.0 - fly));
+        let sc = mix(1.0, 0.1, fly);
+        let op = appear.min(1.0) * (1.0 - smooth(0.85, 1.0, fly));
+        if op <= 0.0 {
+            continue;
+        }
+        let (st, sw) = sticker(x + 24.0, y + 18.0, kind, 18.0, color, if *color == GREEN || *color == HOT { INK } else { "#ffffff" }, None, 0.0, 2.0);
+        cards.push(fframes::svgr!(
+            <g opacity={op} transform={format!("translate({x} {y}) scale({sc}) translate({} {})", -x, -y)}>
+                {card(x, y, w, h, 18.0, PAPER, 6.0, color, 3.0, false)}
+                {st}
+                <text x={x + 40.0 + sw} y={y + 46.0} font-family={DISPLAY} font-weight="700" font-size="24" fill={INK}>{who.to_string()}</text>
+                <text x={x + 24.0} y={y + 82.0} font-family={DISPLAY} font-weight="500" font-size="26" fill={INK}>{text.to_string()}</text>
+            </g>
+        ));
+    }
+    // the database: a stacked cylinder that pulses as records land
+    let db_in = pop(prog(local, 0.5, 1.1)).min(1.0);
+    let hits = (0..4).filter(|k| local > 2.6 + *k as f32 * 0.22).count();
+    let pulse = 1.0 + 0.04 * (1.0 - smooth(0.0, 0.25, (local - 2.6) % 0.22 + if hits > 0 && hits < 4 { 0.0 } else { 1.0 }));
+    let (rw, rh) = (300.0, 56.0);
+    let disc = |cy: f32, fill: &str| -> Svgr<'static> {
+        fframes::svgr!(
+            <g>
+                <path d={format!("M{} {} L{} {} A{rw} {rh} 0 0 0 {} {} L{} {} Z", dx - rw, cy - 60.0, dx - rw, cy + 40.0, dx + rw, cy + 40.0, dx + rw, cy - 60.0)} fill={s(fill)} stroke={INK} stroke-width="5" />
+                <ellipse cx={dx} cy={cy - 60.0} rx={rw} ry={rh} fill={s(fill)} stroke={INK} stroke-width="5" />
+            </g>
+        )
+    };
+    let count_label = format!("{} new records", hits);
+    let db = fframes::svgr!(
+        <g opacity={db_in} transform={format!("translate({dx} {dy}) scale({}) translate({} {})", (0.8 + 0.2 * db_in) * pulse, -dx, -dy)}>
+            {disc(dy + 150.0, "#1f9d55")}
+            {disc(dy + 40.0, "#22c55e")}
+            {disc(dy - 70.0, "#4ade80")}
+            <text x={dx} y={dy + 205.0} text-anchor="middle" font-family={DISPLAY} font-weight="800" font-size="64" letter-spacing="-2" fill={INK}>"MongoDB"</text>
+        </g>
+    );
+    let counter = if hits > 0 {
+        fframes::svgr!(<text x={dx} y={dy + 330.0} text-anchor="middle" font-family={MONO} font-weight="700" font-size="24" letter-spacing="3" fill={CREAM} opacity="0.8">{count_label.to_uppercase()}</text>)
+    } else {
+        Svgr::empty()
+    };
+    let title_a = ease(prog(local, 0.1, 0.5));
+    let line_a = ease(prog(local, 3.3, 3.8));
+    let _ = secs;
+    let fade = ease(prog(local, 0.0, 0.4));
+    fframes::svgr!(
+        <g opacity={fade}>
+            <rect width="1920" height="1080" fill={INK} />
+            {dots(0.0, 0.0, 1920.0, 1080.0, 28.0, CREAM, 0.06)}
+            <text x="170" y="190" font-family={DISPLAY} font-weight="800" font-size="76" letter-spacing="-2.5" fill={CREAM} opacity={title_a}>"Nothing gets lost."</text>
+            {cards}
+            {db}
+            {counter}
+            <g opacity={line_a}>
+                <text x="170" y="460" font-family={DISPLAY} font-weight="700" font-size="44" letter-spacing="-1" fill={CREAM}>"Every chat, agent step and edit"</text>
+                <text x="170" y="520" font-family={DISPLAY} font-weight="700" font-size="44" letter-spacing="-1" fill={CREAM}>"is saved, per project."</text>
+                <text x="170" y="620" font-family={DISPLAY} font-weight="500" font-size="34" fill={CREAM} opacity="0.75">"Anyone can catch up on what happened, and why."</text>
+            </g>
         </g>
     )
 }

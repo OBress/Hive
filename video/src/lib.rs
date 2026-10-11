@@ -26,6 +26,9 @@ pub struct Voice {
     #[serde(rename = "totalSeconds")]
     pub total_seconds: f32,
     pub segments: Vec<Segment>,
+    /// Where the demo footage ends and the outro starts (set by `retime`).
+    #[serde(skip)]
+    pub demo_end: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,8 +47,50 @@ pub struct Word {
     pub end: f32,
 }
 
-pub static VOICE: LazyLock<Voice> =
-    LazyLock::new(|| serde_json::from_str(include_str!("../voice.json")).expect("voice.json"));
+pub static VOICE: LazyLock<Voice> = LazyLock::new(|| {
+    let mut v: Voice = serde_json::from_str(include_str!("../voice.json")).expect("voice.json");
+    retime(&mut v);
+    v
+});
+
+/// The product demo is real app footage (recorded from three teammates' browsers): one clip per
+/// voice segment, with fixed lengths. `"split"` shows Ana's, Ben's and Maya's screens side by side;
+/// `"mongo"` is the drawn scene about everything being saved.
+pub const DEMO: [(&str, &str, f32); 6] = [
+    ("plan", "plan_full.mp4", 9.48),
+    ("sync", "split", 3.98),
+    ("run", "run.mp4", 7.98),
+    ("steer", "steer_full.mp4", 9.86),
+    ("takeover", "takeover.mp4", 8.45),
+    // not footage: everything flowing into MongoDB
+    ("saved", "mongo", 5.6),
+];
+
+/// Lay the demo scenes out back to back from where the intro hands over, start each demo line
+/// a beat into its clip, and move the outro after the footage. Lines voiced later re-time nothing
+/// but their own clip, so footage and voice can't drift apart.
+fn retime(v: &mut Voice) {
+    let mut t = v.segments.iter().find(|s| s.id == DEMO[0].0).map(|s| s.start - LEAD).unwrap_or(19.6);
+    for (id, _, secs) in DEMO {
+        if let Some(s) = v.segments.iter_mut().find(|s| s.id == id) {
+            let d = s.end - s.start;
+            s.start = t + LEAD;
+            s.end = s.start + d;
+        }
+        t += secs;
+    }
+    v.demo_end = t;
+    if let Some(s) = v.segments.iter_mut().find(|s| s.id == "outro") {
+        let d = s.end - s.start;
+        s.start = t + 2.65;
+        s.end = s.start + d;
+        v.total_seconds = s.end + 2.5;
+    }
+}
+
+pub fn demo_end() -> f32 {
+    VOICE.demo_end
+}
 
 fn segment(id: &str) -> &'static Segment {
     VOICE.segments.iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no [{id}] in voice.json"))
@@ -93,28 +138,10 @@ pub enum Kind {
     Hook,
     Problem,
     Intro,
-    Plan,
-    Steer,
-    Stale,
-    Conflict,
-    Memory,
-    Ship,
+    /// Index into `DEMO`.
+    Demo(usize),
     Outro,
 }
-
-const KINDS: [(Kind, &str, &str); 10] = [
-    (Kind::Hook, "hook", "Hook"),
-    (Kind::Problem, "problem", "Problem"),
-    (Kind::Intro, "intro", "Intro"),
-    (Kind::Plan, "plan", "Plan"),
-    (Kind::Steer, "steer", "Steer"),
-    (Kind::Stale, "stale", "Stale"),
-    (Kind::Conflict, "conflict", "Conflict"),
-    (Kind::Memory, "memory", "Memory"),
-    (Kind::Ship, "ship", "Ship"),
-    (Kind::Outro, "outro", "Outro"),
-];
-
 /// One scene per voice segment; `start` is its global start second.
 #[derive(Debug)]
 pub struct Shot {
@@ -145,24 +172,22 @@ pub struct HiveVideo {
 
 impl HiveVideo {
     pub fn new() -> Self {
-        let starts: Vec<f32> = KINDS
-            .iter()
-            .enumerate()
-            .map(|(i, (kind, id, _))| match kind {
-                _ if i == 0 => 0.0,
-                // the closing zoom-out starts as soon as the ship line is said
-                Kind::Outro => seg_end("ship") + 0.35,
-                _ => seg_start(id) - LEAD,
-            })
-            .collect();
-        let shots = KINDS
-            .iter()
-            .enumerate()
-            .map(|(i, (kind, _, name))| {
-                let end = starts.get(i + 1).copied().unwrap_or(VOICE.total_seconds);
-                Shot { kind: *kind, name, start: starts[i], dur: end - starts[i] }
-            })
-            .collect();
+        let mut shots = vec![
+            Shot { kind: Kind::Hook, name: "Hook", start: 0.0, dur: 0.0 },
+            Shot { kind: Kind::Problem, name: "Problem", start: seg_start("problem") - LEAD, dur: 0.0 },
+            Shot { kind: Kind::Intro, name: "Intro", start: seg_start("intro") - LEAD, dur: 0.0 },
+        ];
+        const NAMES: [&str; 6] = ["Plan", "Sync", "Run", "Steer", "TakeOver", "Saved"];
+        let mut t = seg_start(DEMO[0].0) - LEAD;
+        for (i, (_, _, secs)) in DEMO.iter().enumerate() {
+            shots.push(Shot { kind: Kind::Demo(i), name: NAMES[i], start: t, dur: 0.0 });
+            t += secs;
+        }
+        shots.push(Shot { kind: Kind::Outro, name: "Outro", start: demo_end(), dur: 0.0 });
+        for i in 0..shots.len() {
+            let end = shots.get(i + 1).map(|s| s.start).unwrap_or(VOICE.total_seconds);
+            shots[i].dur = end - shots[i].start;
+        }
         Self { shots }
     }
 }
@@ -194,6 +219,8 @@ impl Video for HiveVideo {
             VOICE
                 .segments
                 .iter()
+                // lines not voiced yet (no wav in audio/) are skipped
+                .filter(|s| std::path::Path::new("audio").join(&s.file).exists())
                 .map(|s| AudioTrack::new(s.file.as_str(), Second(s.start)..Eof).voice())
                 .collect::<Vec<_>>(),
         )
