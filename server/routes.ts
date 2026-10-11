@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { HttpError, getDoc, tasks } from './doc.ts';
+import { addChat, HttpError, getDoc, tasks } from './doc.ts';
 import { models, provider } from './llm.ts';
-import { summarize } from './planner.ts';
+import { chat, summarize } from './planner.ts';
 import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, takeover } from './session.ts';
 import { WORKSPACE } from './paths.ts';
 import { listFiles, readFile, safePath } from './workspace.ts';
@@ -84,6 +84,13 @@ routes.post('/tasks/:id/handoff', async (req, res) => {
 routes.get('/tasks/:id/summary', async (req, res) => {
   getTask(id(req));
   res.json(await summarize(id(req)));
+});
+
+routes.post('/chat', (req, res) => {
+  const { from, text } = need(req, 'from', 'text');
+  const msg = addChat({ from, text });
+  void chat(from, text);
+  res.status(202).json({ id: msg.id });
 });
 
 routes.use((_req, _res) => { throw new HttpError(404, 'Not found'); });
