@@ -2,7 +2,8 @@ import { afterEach, expect, test } from 'vitest';
 import type { NextFunction, Request, Response } from 'express';
 import { authMiddleware, setVerifier, wsAuthenticate } from './auth.ts';
 
-const ana = { id: 'u1', login: 'ana-gh', name: 'Ana', avatarUrl: '', githubId: '42' };
+const ana = { id: 'u1', login: 'ana-gh', name: 'Ana', avatarUrl: '', githubId: '42', approved: true };
+const ben = { id: 'u2', login: 'ben-gh', name: 'Ben', avatarUrl: '', githubId: '43', approved: false };
 
 async function call(method: string, body: Record<string, unknown>, auth?: string) {
   const req = { method, body, headers: auth ? { authorization: auth } : {} } as unknown as Request;
@@ -33,6 +34,17 @@ test('a missing or bad token gets 401 when auth is on', async () => {
   expect(missing.next).toBe(false);
   expect((await call('PUT', { by: 'Ana' }, 'Bearer bad')).status).toBe(401);
   expect((await call('GET', {})).next).toBe(true);
+});
+
+test('an account waiting for approval can read but not write', async () => {
+  setVerifier(async (t) => (t === 'ben' ? ben : null));
+  const r = await call('POST', { by: 'ben-gh' }, 'Bearer ben');
+  expect(r.status).toBe(403);
+  expect(r.next).toBe(false);
+  const g = await call('GET', {}, 'Bearer ben');
+  expect(g.next).toBe(true);
+  expect(g.locals.user).toEqual(ben);
+  await expect(wsAuthenticate({ token: JSON.stringify({ access: 'ben' }) }, 'e')).rejects.toEqual({ reason: 'approval-required' });
 });
 
 test('with auth off the body name is used', async () => {

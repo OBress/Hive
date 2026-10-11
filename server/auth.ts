@@ -2,7 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 import type { NextFunction, Request, Response } from 'express';
 import { rememberUser } from './users.ts';
 
-export interface HiveUser { id: string; login: string; name: string; avatarUrl: string; githubId: string }
+// approved: an admin ticked this account in Supabase (public.profiles, see supabase-approvals.sql).
+export interface HiveUser { id: string; login: string; name: string; avatarUrl: string; githubId: string; approved: boolean }
 type Verifier = (token: string) => Promise<HiveUser | null>;
 
 let verifier: Verifier | null = null;
@@ -31,15 +32,30 @@ export function initAuth() {
     if (error || !data.user) return null;
     const m = data.user.user_metadata ?? {};
     const login = String(m.user_name ?? m.preferred_username ?? data.user.email?.split('@')[0] ?? data.user.id);
-    return { id: data.user.id, login, name: String(m.full_name ?? m.name ?? login), avatarUrl: String(m.avatar_url ?? ''), githubId: String(m.provider_id ?? m.sub ?? '') };
+    const approved = await isApproved(url, key, token, data.user.id);
+    return { id: data.user.id, login, name: String(m.full_name ?? m.name ?? login), avatarUrl: String(m.avatar_url ?? ''), githubId: String(m.provider_id ?? m.sub ?? ''), approved };
   });
   console.log('Auth on: Supabase GitHub sign-in required for changes');
+}
+
+// Reads the person's own profiles row with their token (RLS lets them see only that row). No row or an error = not approved.
+async function isApproved(url: string, key: string, token: string, id: string): Promise<boolean> {
+  const r = await fetch(`${url}/rest/v1/profiles?id=eq.${encodeURIComponent(id)}&select=approved`, {
+    headers: { apikey: key, Authorization: `Bearer ${token}` },
+  }).catch(() => null);
+  if (!r?.ok) {
+    console.error(`Approval check failed (${r?.status ?? 'network'}): run server/supabase-approvals.sql in the Supabase SQL editor`);
+    return false;
+  }
+  const rows = (await r.json()) as { approved?: boolean }[];
+  return rows[0]?.approved === true;
 }
 
 export async function verifyToken(token: string): Promise<HiveUser | null> {
   if (!verifier || !token) return null;
   const hit = cache.get(token);
-  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.user;
+  // Someone waiting for approval is re-checked every 30 s so they get in soon after being approved.
+  if (hit && Date.now() - hit.at < (hit.user && !hit.user.approved ? 30_000 : 5 * 60 * 1000)) return hit.user;
   const user = await verifier(token).catch(() => null);
   cache.set(token, { user, at: Date.now() });
   return user;
@@ -47,18 +63,19 @@ export async function verifyToken(token: string): Promise<HiveUser | null> {
 
 const bearer = (req: Request) => /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '')?.[1]?.trim() ?? '';
 
-// With auth on: non-GET calls need a valid token, and the verified login replaces `by` / `from`.
+// With auth on: non-GET calls need a valid token from an approved account, and the verified login replaces `by` / `from`.
 export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   if (!authEnabled()) return next();
   const token = bearer(req);
   const user = token ? await verifyToken(token) : null;
   if (user) {
     res.locals.user = user;
-    rememberUser({ login: user.login, name: user.name, avatarUrl: user.avatarUrl });
+    if (user.approved) rememberUser({ login: user.login, name: user.name, avatarUrl: user.avatarUrl });
     res.locals.githubToken = githubTokens.get(user.id);
   }
   if (req.method === 'GET' || req.method === 'OPTIONS') return next();
   if (!user) return void res.status(401).json({ error: token ? 'Invalid or expired sign-in' : 'Sign in required' });
+  if (!user.approved) return void res.status(403).json({ error: 'Your account is waiting for approval' });
   req.body = { ...(req.body ?? {}), by: user.login, from: user.login };
   next();
 }
@@ -77,5 +94,6 @@ export async function wsAuthenticate({ token }: { token: string }, currentEpoch:
   if (!authEnabled()) return {};
   const user = await verifyToken(access);
   if (!user) throw { reason: 'sign-in-required' };
+  if (!user.approved) throw { reason: 'approval-required' };
   return { user };
 }

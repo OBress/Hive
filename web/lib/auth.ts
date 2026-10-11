@@ -8,7 +8,8 @@ import { createClient, type Session, type SupabaseClient } from '@supabase/supab
 import { SERVER_PORT } from '@hive/shared/types';
 
 export interface ServerConfig { auth: boolean; supabaseUrl?: string; supabaseAnonKey?: string; epoch: string }
-export interface AuthState { ready: boolean; auth: boolean; login: string | null; error?: string }
+// approved: null until the server has said; false = signed in but waiting for an admin to approve the account.
+export interface AuthState { ready: boolean; auth: boolean; login: string | null; approved: boolean | null; error?: string }
 
 // Where the server is: NEXT_PUBLIC_SERVER_URL when the app is hosted (set at build time, e.g. https://api.example.com);
 // otherwise port 4000 on the page's own host, so localhost and a LAN IP both work.
@@ -26,7 +27,7 @@ export function loadConfig(): Promise<ServerConfig> {
 
 let supabase: SupabaseClient | null = null;
 let session: Session | null = null;
-let state: AuthState = { ready: false, auth: false, login: null };
+let state: AuthState = { ready: false, auth: false, login: null, approved: null };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<AuthState>) => { state = { ...state, ...patch }; listeners.forEach((l) => l()); };
 
@@ -45,6 +46,19 @@ function sendProviderToken(s: Session | null) {
   }).catch(() => {});
 }
 
+// Asks the server whether this account is approved; while it isn't, asks again every 30 s.
+let approvalTimer: ReturnType<typeof setTimeout> | undefined;
+async function checkApproval() {
+  clearTimeout(approvalTimer);
+  if (!session) return set({ approved: null });
+  const j = await fetch(`${base()}/api/me`, { headers: authHeaders() })
+    .then((r) => r.json() as Promise<{ user?: { approved?: boolean } | null }>)
+    .catch(() => null);
+  const approved = j?.user ? j.user.approved === true : null;
+  set({ approved });
+  if (!approved) approvalTimer = setTimeout(() => void checkApproval(), 30_000);
+}
+
 let started: Promise<void> | null = null;
 export function initAuth(): Promise<void> {
   started ??= (async () => {
@@ -58,8 +72,10 @@ export function initAuth(): Promise<void> {
         session = s;
         if (event === 'SIGNED_IN') sendProviderToken(s);
         set({ login: loginOf(s) });
+        if (event === 'SIGNED_IN' || event === 'SIGNED_OUT') void checkApproval();
       });
       set({ ready: true, auth: true, login: loginOf(session) });
+      void checkApproval();
     } catch {
       started = null;
       set({ ready: true, auth: false, error: 'Could not reach the Hive server' });

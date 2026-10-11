@@ -95,7 +95,7 @@ Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and 
 
 ## Auth
 
-Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tables. When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set, every non-GET `/api/*` call needs `Authorization: Bearer <access token>` and the server replaces `by`/`from` with the verified GitHub login; the websocket requires the same token. The person's GitHub `provider_token` is kept in server memory only, for pushing on Approve. With Supabase unset, auth is off and `by`/`from` come from the body.
+Supabase is used **only for sign-in** (GitHub OAuth) and account approval: the one table, `public.profiles` (`server/supabase-approvals.sql`, run once in the SQL editor), has an `approved` boolean per account. New accounts start unapproved; tick `approved` in the Table Editor to let someone in. Until then they get 403 on every non-GET call, an empty project list, no websocket, and a "waiting for approval" screen. When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set, every non-GET `/api/*` call needs `Authorization: Bearer <access token>` and the server replaces `by`/`from` with the verified GitHub login; the websocket requires the same token. The person's GitHub `provider_token` is kept in server memory only, for pushing on Approve. With Supabase unset, auth is off and `by`/`from` come from the body.
 
 ## Endpoints
 
