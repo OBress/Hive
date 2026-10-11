@@ -10,7 +10,9 @@ fn main() -> ExitCode {
     let media = HiveMedia::new().expect("media");
     let voice_dir = MediaDirectory::read_folder("audio").expect("audio/ (run `node tts.mjs` first)");
     let voice = voice_dir.process_media_source().expect("voice clips");
-    let all = CombinedMediaProvider::from([&media as &dyn MediaProvider, &voice]);
+    let footage_dir = MediaDirectory::read_folder("footage").expect("footage/ (app recordings)");
+    let footage = footage_dir.process_media_source().expect("footage");
+    let all = CombinedMediaProvider::from([&media as &dyn MediaProvider, &voice, &footage]);
     let video = HiveVideo::new();
 
     cli::new(

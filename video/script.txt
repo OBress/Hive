@@ -6,6 +6,8 @@
 #                    Everything below it until the next [id] is spoken.
 # [id +2.5]          same, with 2.5 s of extra silence before it (room for a visual moment).
 # The whole video (lead + segments + gaps + tail) must stay under 90 seconds.
+# The demo segments (plan..takeover) play over real app footage, [saved] over the MongoDB scene, whose lengths are fixed in
+# src/lib.rs (DEMO); keep each line shorter than its clip.
 # Check the length for free with: node video/tts.mjs --dry
 
 @voice default-k9clc4a3oti3wz7fthbp3a__design-voice-9a548183
@@ -25,22 +27,22 @@ But every agent works alone: its own tab, its own chat, its own branch. Nobody s
 Hive fixes that: one live task graph where your whole team and its agents build together.
 
 [plan]
-Maya types one message: build a URL shortener with click stats. The Planner splits it into tasks, and agents build each one in its own sandbox, streaming every edit and test live.
+Ana describes what she wants: a link-shortening app. Hive's AI breaks it into a plan of tasks.
+
+[sync]
+Her whole team sees the same plan, live.
+
+[run]
+One click, and AI agents start writing the code, while everyone watches.
 
 [steer]
-Sam steers an agent mid-run. Priya takes over a task, fixes an edge case by hand, and hands it back.
+Ben tells the agent to count unique visitors, not total clicks. It replies, and changes its approach.
 
-[stale]
-Then Maya changes a spec: count clicks per day, not total. Hive marks that task stale, stops it, and rebuilds only that task. Everything that already passed stays put.
+[takeover]
+Maya pauses the agent and edits the code herself. Then the agent picks up where she left off.
 
-[conflict]
-When two agents touch the same file, Hive proposes an AI merge and applies it only if the tests pass. Otherwise, a person picks.
-
-[memory]
-Every change is recorded. Ask the Planner why short codes are six characters, and it answers from the log, citing the decisions.
-
-[ship]
-When every test is green, one click approves and pushes the repo to GitHub.
+[saved]
+Nothing gets lost: every chat, agent step and edit is saved to MongoDB, so anyone can catch up.
 
 [outro +2.6]
-Hive. Humans and agents, one graph.
+Hive. The collaborative workspace where people and AI agents build software together.

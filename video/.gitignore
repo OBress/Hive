@@ -8,3 +8,6 @@ _frame_snapshots/*.actual.png
 _frame_snapshots/*.diff.png
 build.log
 voice-preview.wav
+
+# app recordings used by the demo scenes
+!footage/*.mp4
