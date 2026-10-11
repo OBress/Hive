@@ -3,6 +3,7 @@ import { addChat, addStep, HttpError, getDoc, tasks } from './doc.ts';
 import { githubTokens, authEnabled } from './auth.ts';
 import { git, withRepoLock } from './git.ts';
 import { models, provider } from './llm.ts';
+import { history } from './mongo.ts';
 import { chat, summarize } from './planner.ts';
 import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, takeover } from './session.ts';
 import { WORKSPACE } from './paths.ts';
@@ -125,6 +126,13 @@ routes.post('/approve', async (req, res) => {
     return { status: 200, body: { ok: true, commit, pushed, url, pushError } };
   });
   res.status(result.status).json(result.body);
+});
+
+routes.get('/history', async (req, res) => {
+  const taskId = typeof req.query.taskId === 'string' ? req.query.taskId : '';
+  if (!taskId) throw new HttpError(400, 'Missing "taskId"');
+  getTask(taskId);
+  res.json(await history(taskId));
 });
 
 routes.get('/me', (_req, res) => {

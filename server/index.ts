@@ -7,6 +7,7 @@ import seed from '@hive/shared/seed.json' with { type: 'json' };
 import { authMiddleware, initAuth, wsAuthenticate } from './auth.ts';
 import { getDoc, setDoc } from './doc.ts';
 import { initModels } from './llm.ts';
+import { initMongo } from './mongo.ts';
 import { DATA_DIR, DOC_FILE } from './paths.ts';
 import { errorHandler, routes } from './routes.ts';
 import { recover, watchTasks } from './session.ts';
@@ -60,7 +61,7 @@ const server = new Server({
 mkdirSync(DATA_DIR, { recursive: true });
 await ensureWorkspace();
 initAuth();
-await initModels();
+await Promise.all([initModels(), initMongo()]);
 await server.listen(PORT);
 
 // A server-side connection keeps the doc loaded even with no browsers open; server code uses it via doc.ts.
