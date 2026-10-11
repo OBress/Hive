@@ -1,10 +1,12 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { addChat, HttpError, getDoc, tasks } from './doc.ts';
+import { addChat, addStep, HttpError, getDoc, tasks } from './doc.ts';
+import { git, withRepoLock } from './git.ts';
 import { models, provider } from './llm.ts';
 import { chat, summarize } from './planner.ts';
 import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, takeover } from './session.ts';
 import { WORKSPACE } from './paths.ts';
-import { listFiles, readFile, safePath } from './workspace.ts';
+import { runTests } from './runner.ts';
+import { head, listFiles, readFile, safePath } from './workspace.ts';
 
 // Required string fields from the body (400 if missing).
 function need(req: Request, ...fields: string[]): Record<string, string> {
@@ -91,6 +93,37 @@ routes.post('/chat', (req, res) => {
   const msg = addChat({ from, text });
   void chat(from, text);
   res.status(202).json({ id: msg.id });
+});
+
+// Test main; if green, push it to GitHub with the approver's token (else GITHUB_TOKEN, else not at all).
+routes.post('/approve', async (req, res) => {
+  const { by } = need(req, 'by');
+  const token: string | undefined = res.locals.githubToken || process.env.GITHUB_TOKEN || undefined;
+  const remote = process.env.GITHUB_REMOTE?.trim() ?? '';
+  const result = await withRepoLock(async () => {
+    const r = await runTests(WORKSPACE);
+    if (r.failed > 0 || r.passed === 0) {
+      addStep({ kind: 'error', by, text: `Approve blocked: ${r.passed} passed, ${r.failed} failed on main` });
+      return { status: 409, body: { ok: false, error: 'Tests failed on main', output: r.output } };
+    }
+    const commit = await head(WORKSPACE);
+    let pushed = false;
+    let pushError: string | undefined;
+    if (remote && token) {
+      const authed = remote.replace(/^https:\/\//, `https://x-access-token:${encodeURIComponent(token)}@`);
+      try {
+        await git(WORKSPACE, ['-c', 'credential.helper=', 'push', authed, 'main:main']);
+        pushed = true;
+      } catch (e) {
+        pushError = (e as Error).message.split(authed).join(remote).split(token).join('***').split(encodeURIComponent(token)).join('***');
+        addStep({ kind: 'error', by, text: `Push failed: ${pushError.slice(0, 300)}`, commit });
+      }
+    }
+    const url = remote ? remote.replace(/\.git$/, '') : '';
+    addStep({ kind: 'approve', by, text: `${by} approved main (${r.passed} tests passed)${pushed ? ' and pushed to GitHub' : ''}`, commit });
+    return { status: 200, body: { ok: true, commit, pushed, url, pushError } };
+  });
+  res.status(result.status).json(result.body);
 });
 
 routes.use((_req, _res) => { throw new HttpError(404, 'Not found'); });

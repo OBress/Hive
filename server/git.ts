@@ -11,7 +11,7 @@ export function git(cwd: string, args: string[], author?: Author): Promise<strin
   return new Promise((resolve, reject) => {
     execFile('git', [...pre, ...args], { cwd, maxBuffer: 20 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
       (err, stdout, stderr) => {
-        if (err) reject(Object.assign(new Error(`git ${args[0]} failed: ${(stderr || err.message).trim()}`), { stdout, code: err.code }));
+        if (err) reject(Object.assign(new Error(`git ${args[args[0] === "-c" ? 2 : 0]} failed: ${(stderr || err.message).trim()}`), { stdout, code: err.code }));
         else resolve(stdout);
       });
   });
