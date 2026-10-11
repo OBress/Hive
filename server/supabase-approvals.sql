@@ -35,3 +35,24 @@ insert into public.profiles (id, login, approved)
 select id, coalesce(raw_user_meta_data ->> 'user_name', raw_user_meta_data ->> 'preferred_username', email), true
 from auth.users
 on conflict (id) do update set approved = true;
+
+-- People to share a project with: every account that has signed in, matched by GitHub username or name.
+-- Only an approved person can call it (the Hive server calls it with the person's own token).
+-- Returns no emails or tokens, only what is shown on an avatar.
+create or replace function public.hive_people(q text default '')
+returns table (login text, name text, avatar_url text)
+language sql stable security definer set search_path = '' as $$
+  select l.login, l.name, l.avatar_url from (
+    select coalesce(u.raw_user_meta_data ->> 'user_name', u.raw_user_meta_data ->> 'preferred_username') as login,
+           coalesce(u.raw_user_meta_data ->> 'full_name', u.raw_user_meta_data ->> 'name', '') as name,
+           coalesce(u.raw_user_meta_data ->> 'avatar_url', '') as avatar_url
+    from auth.users u
+  ) l
+  where l.login is not null
+    and exists (select 1 from public.profiles p where p.id = auth.uid() and p.approved)
+    and (coalesce(q, '') = '' or l.login ilike '%' || q || '%' or l.name ilike '%' || q || '%')
+  order by l.login
+  limit 25;
+$$;
+revoke execute on function public.hive_people(text) from public, anon;
+grant execute on function public.hive_people(text) to authenticated;

@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import type { NextFunction, Request, Response } from 'express';
+import type { UserSummary } from '@hive/shared/types';
 import { rememberUser } from './users.ts';
 
 // approved: an admin ticked this account in Supabase (public.profiles, see supabase-approvals.sql).
@@ -7,6 +8,7 @@ export interface HiveUser { id: string; login: string; name: string; avatarUrl: 
 type Verifier = (token: string) => Promise<HiveUser | null>;
 
 let verifier: Verifier | null = null;
+let supabaseRest: { url: string; key: string } | null = null;
 const cache = new Map<string, { user: HiveUser | null; at: number }>();
 // GitHub provider tokens by Supabase user id: server memory only, never the doc, logs, disk or responses.
 export const githubTokens = new Map<string, string>();
@@ -26,6 +28,7 @@ export function initAuth() {
     console.log('Auth off: SUPABASE_URL / SUPABASE_ANON_KEY not set; names come from request bodies');
     return;
   }
+  supabaseRest = { url, key };
   const supabase = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
   setVerifier(async (token) => {
     const { data, error } = await supabase.auth.getUser(token);
@@ -51,6 +54,23 @@ async function isApproved(url: string, key: string, token: string, id: string): 
   return rows[0]?.approved === true;
 }
 
+// Everyone who has a Supabase account (approved or not), matched by login or name, via public.hive_people
+// (supabase-approvals.sql) with the asking person's token. An error or a missing function = nobody extra.
+export async function supabasePeople(token: string, q: string): Promise<UserSummary[]> {
+  if (!supabaseRest || !token) return [];
+  const r = await fetch(`${supabaseRest.url}/rest/v1/rpc/hive_people`, {
+    method: 'POST',
+    headers: { apikey: supabaseRest.key, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q }),
+  }).catch(() => null);
+  if (!r?.ok) {
+    console.error(`People search failed (${r?.status ?? 'network'}): run server/supabase-approvals.sql in the Supabase SQL editor`);
+    return [];
+  }
+  const rows = (await r.json()) as { login: string; name: string; avatar_url: string }[];
+  return rows.map((p) => ({ login: p.login, name: p.name || p.login, avatarUrl: p.avatar_url ?? '' }));
+}
+
 export async function verifyToken(token: string): Promise<HiveUser | null> {
   if (!verifier || !token) return null;
   const hit = cache.get(token);
@@ -70,6 +90,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
   const user = token ? await verifyToken(token) : null;
   if (user) {
     res.locals.user = user;
+    res.locals.token = token;
     if (user.approved) rememberUser({ login: user.login, name: user.name, avatarUrl: user.avatarUrl });
     res.locals.githubToken = githubTokens.get(user.id);
   }

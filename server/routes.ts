@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { ARRAYS, MAPS } from '@hive/shared/types';
 import { addChat, addStep, HttpError, getDoc } from './doc.ts';
-import { githubTokens, authEnabled } from './auth.ts';
+import { githubTokens, authEnabled, supabasePeople } from './auth.ts';
 import { withRepoLock } from './git.ts';
 import { createRepo, pushMain, remoteFor } from './github.ts';
 import { models, provider } from './llm.ts';
@@ -89,9 +89,11 @@ api.post('/stack', async (req, res) => {
   res.json({ stack: await stackDoc(name.slice(0, 60), opt(req, 'goal').slice(0, 500), opt(req, 'notes').slice(0, 1000)) });
 });
 
-// People to share with: everyone who has signed in here, matched by login or name.
-api.get('/users', (req, res) => {
-  const q = typeof req.query.q === 'string' ? req.query.q : '';
+// People to share with: everyone who has signed in here, matched by login or name. With auth on, accounts
+// from Supabase are added too (someone who signed in but hasn't been approved or used Hive yet), so they can be shared with.
+api.get('/users', async (req, res) => {
+  const q = (typeof req.query.q === 'string' ? req.query.q : '').trim().slice(0, 60);
+  if (res.locals.user?.approved) for (const u of await supabasePeople(res.locals.token, q)) rememberUser(u);
   res.json({ users: searchUsers(q, who(req, res)) });
 });
 

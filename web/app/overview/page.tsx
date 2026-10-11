@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import type { Project } from '@hive/shared/types';
 import TopBar from '@/components/TopBar';
 import { Avatar, Icon, tilt } from '@/components/ui';
 import { usePeers, useUserName } from '@/lib/hive';
@@ -9,7 +10,7 @@ import { useHive } from '@/lib/mock';
 import type { Decision } from '@/lib/types';
 import { connectRepo, STACK, timeAgo, useRepo, type Commit } from '@/lib/project';
 import { DeleteDialog, RenameDialog, ShareDialog } from '@/components/ProjectDialogs';
-import { appQuery, sameLogin, useProject } from '@/lib/projects';
+import { appQuery, sameLogin, setShared, useProject } from '@/lib/projects';
 
 const BASE_NOW = Date.UTC(2026, 9, 11, 12, 0, 0);
 
@@ -92,7 +93,7 @@ export default function Overview() {
 
           <aside className="hv-ov__side">
             <AgentsNow />
-            <People me={me} decisions={s.decisions} now={now} />
+            <People me={me} project={project} decisions={s.decisions} now={now} onAdd={() => setDialog('share')} />
           </aside>
 
           <Calendar now={now} decisions={s.decisions} />
@@ -213,12 +214,20 @@ function AgentState({ busy }: { busy: boolean }) {
 
 interface Contributor { name: string; online: boolean; actions: number; last?: number; openTaskId?: string }
 
-// Online = connected right now (Hocuspocus awareness). Past = appear in the decision log but aren't connected.
-function People({ me, decisions, now }: { me: string; decisions: Decision[]; now: number }) {
+// The project's people (owner + shared with), who can be added or removed here, then anyone else seen on it.
+// Online = connected right now (Hocuspocus awareness); past = in the decision log but not connected.
+function People({ me, project, decisions, now, onAdd }: { me: string; project: Project | null; decisions: Decision[]; now: number; onAdd: () => void }) {
   const s = useHive();
   const peers = usePeers();
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
   const byName = new Map<string, Contributor>();
-  const get = (name: string) => byName.get(name) ?? byName.set(name, { name, online: false, actions: 0 }).get(name)!;
+  const get = (name: string) => {
+    const known = [...byName.keys()].find((k) => sameLogin(k, name));
+    return byName.get(known ?? name) ?? byName.set(name, { name, online: false, actions: 0 }).get(name)!;
+  };
+  const members = project ? [project.createdBy, ...project.sharedWith] : [];
+  for (const m of members) get(m);
   if (me !== 'Guest') get(me).online = true;
   for (const p of peers) Object.assign(get(p.name), { online: true, openTaskId: p.openTaskId });
   for (const d of decisions) {
@@ -228,25 +237,55 @@ function People({ me, decisions, now }: { me: string; decisions: Decision[]; now
     c.last = Math.max(c.last ?? 0, Date.parse(d.at));
   }
   const all = [...byName.values()];
-  const online = all.filter((c) => c.online).sort((a, b) => (a.name === me ? -1 : b.name === me ? 1 : a.name.localeCompare(b.name)));
-  const past = all.filter((c) => !c.online).sort((a, b) => (b.last ?? 0) - (a.last ?? 0));
+  const isMember = (c: Contributor) => members.some((m) => sameLogin(m, c.name));
+  const team = members.map((m) => get(m));
+  const others = all.filter((c) => !isMember(c));
+  const online = others.filter((c) => c.online).sort((a, b) => (a.name === me ? -1 : b.name === me ? 1 : a.name.localeCompare(b.name)));
+  const past = others.filter((c) => !c.online).sort((a, b) => (b.last ?? 0) - (a.last ?? 0));
+  const onlineCount = all.filter((c) => c.online).length;
+  const detail = (c: Contributor) => c.openTaskId ? `Viewing ${s.tasks[c.openTaskId]?.title ?? c.openTaskId}` : c.online ? (sameLogin(c.name, me) ? 'You' : 'Online') : 'Not connected';
+
+  const remove = async (login: string) => {
+    if (!project) return;
+    setBusy(login);
+    setErr('');
+    try { await setShared(project.id, login, false); } catch (x) { setErr((x as Error).message); } finally { setBusy(''); }
+  };
 
   return (
     <section className="hv-card hv-ov__people">
-      <header className="hv-ov__head"><h2>Collaborators</h2><span className="hv-sticker hv-sticker--green">{online.length} online</span></header>
-      {online.length ? (
+      <header className="hv-ov__head">
+        <h2>Collaborators</h2>
+        <div className="hv-chips">
+          <span className="hv-sticker hv-sticker--green">{onlineCount} online</span>
+          {project && <button type="button" className="hv-btn hv-btn--paper hv-btn--sm" onClick={onAdd}><Icon name="plus" size={14} /> Add</button>}
+        </div>
+      </header>
+      {team.length > 0 && (
         <ul className="hv-people">
-          {online.map((c) => (
-            <PersonRow key={c.name} c={c} me={me} now={now}
-              detail={c.openTaskId ? `Viewing ${s.tasks[c.openTaskId]?.title ?? c.openTaskId}` : c.name === me ? 'You' : 'Online'} />
+          {team.map((c, i) => (
+            <PersonRow key={c.name} c={c} me={me} now={now} detail={detail(c)}
+              end={i === 0
+                ? <span className="hv-sticker hv-sticker--ink">Owner</span>
+                : <button type="button" className="hv-btn hv-btn--paper hv-btn--sm" disabled={!!busy} onClick={() => void remove(c.name)}>
+                    {busy === c.name ? 'Removing…' : sameLogin(c.name, me) ? 'Leave' : 'Remove'}
+                  </button>} />
           ))}
         </ul>
-      ) : <p className="hv-ov__empty">Open this page with ?name=YourName to show up here.</p>}
+      )}
+      {err && <p className="hv-projects__err">{err}</p>}
+      {project && team.length === 1 && <p className="hv-ov__empty">Only you so far. Add people by GitHub username to work on this together.</p>}
+      {online.length > 0 && (
+        <ul className="hv-people">
+          {online.map((c) => <PersonRow key={c.name} c={c} me={me} now={now} detail={detail(c)} />)}
+        </ul>
+      )}
+      {!team.length && !online.length && <p className="hv-ov__empty">Open this page with ?name=YourName to show up here.</p>}
       {past.length > 0 && (
         <>
           <span className="hv-label">Past collaborators</span>
           <ul className="hv-people is-past">
-            {past.map((c) => <PersonRow key={c.name} c={c} me={me} now={now} detail="Not connected" />)}
+            {past.map((c) => <PersonRow key={c.name} c={c} me={me} now={now} detail={detail(c)} />)}
           </ul>
         </>
       )}
@@ -254,12 +293,12 @@ function People({ me, decisions, now }: { me: string; decisions: Decision[]; now
   );
 }
 
-function PersonRow({ c, me, now, detail }: { c: Contributor; me: string; now: number; detail: string }) {
+function PersonRow({ c, me, now, detail, end }: { c: Contributor; me: string; now: number; detail: string; end?: ReactNode }) {
   return (
     <li>
       <span className="hv-people__av"><Avatar name={c.name} size={34} />{c.online && <i />}</span>
-      <div><b>{c.name}{c.name === me ? ' (you)' : ''}</b><span>{detail}</span></div>
-      <div className="hv-people__num"><b>{c.actions}</b><span>{c.last ? timeAgo(c.last, now) : 'decisions'}</span></div>
+      <div><b>{c.name}{sameLogin(c.name, me) ? ' (you)' : ''}</b><span>{end && c.actions ? `${detail} · ${c.actions} ${c.actions === 1 ? 'decision' : 'decisions'}` : detail}</span></div>
+      {end ?? <div className="hv-people__num"><b>{c.actions}</b><span>{c.last ? timeAgo(c.last, now) : 'decisions'}</span></div>}
     </li>
   );
 }
