@@ -1,10 +1,11 @@
-import type { Step, TaskSpec, TaskState } from '@hive/shared/types';
-import { addChat, HttpError, serverWrite, sessions, setSession, setTaskState, steps, taskState, tasks } from './doc.ts';
-import { applyOps } from './graph.ts';
+import type { AutonomyMode, Step, TaskSpec, TaskState } from '@hive/shared/types';
+import { addChat, addStep, HttpError, serverWrite, sessions, setSession, setTaskState, steps, taskState, tasks } from './doc.ts';
+import { applyOps, readyTasks } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
 import { history } from './mongo.ts';
-import { current } from './projects.ts';
-import { schedule, specChanged } from './session.ts';
+import { current, updateProject } from './projects.ts';
+import { schedule, specChanged, startTask } from './session.ts';
+import { resetRounds } from './verify.ts';
 
 const SUMMARY_SYSTEM = `You summarize a coding agent's work on one task for a teammate who is picking it up.
 Reply with exactly four short labeled lines and nothing else:
@@ -37,7 +38,7 @@ export async function summarize(taskId: string): Promise<{ summary: string; step
 
 const STACK_SYSTEM = `You are Hive's architect. Someone, possibly not technical, describes a project; write the stack and spec doc that Hive's planner and coding agents will follow.
 
-Hive's coding agents build in a fixed workspace: Node.js ES modules ("type": "module"), Node built-ins only (no npm packages), code under src/, tests under test/ run with node --test. Choose everything within that: e.g. node:http for a web server or API, a JSON file or in-memory Map for storage, plain HTML/CSS/JS strings served by node:http for a UI, node:test and node:assert/strict for tests. Never suggest a database server, framework or package.
+Hive's coding agents build in a fixed workspace: Node.js ES modules ("type": "module"), Node built-ins only (no npm packages), code under src/, tests under test/ run with node --test. Choose everything within that: e.g. node:http for a web server or API, a JSON file or in-memory Map for storage, plain HTML/CSS/JS strings served by node:http for a UI, node:test and node:assert/strict for tests. Never suggest a database server, framework or package. If people open the result in a browser, it is served by src/server.js (listening on process.env.PORT) or is a static src/index.html: Hive previews it that way.
 
 Reply in Markdown only, with these sections and nothing else:
 # Stack and spec: <project name>
@@ -76,6 +77,14 @@ Reply with strict JSON only, no prose around it:
   {"op":"removeTask","id":"..."}
   {"op":"addDep","from":"a","to":"b"}   (b depends on a)
   {"op":"removeDep","from":"a","to":"b"}
+  Add "ask": true to a task (in addTask's task or updateTask's fields) when it deploys, deletes data, spends money
+  or touches accounts outside the workspace: in Semi-auto it then waits for a person's OK.
+- Two more ops control running, only when the person asks for it:
+  {"op":"start","ids":["a","b"]} or {"op":"start","ids":"all"}   start these tasks (or all) now; the rest follow as their dependencies finish
+  {"op":"setMode","mode":"manual"}   (or "semi" / "auto") only when the person explicitly asks to change the mode
+  Modes: Manual (nothing starts by itself), Semi-auto (ready tasks start by themselves except ones marked "ask"),
+  Automatic (everything runs, then a goal check adds follow-up work). When the person asks you to start, run or
+  "go through" the tasks, emit {"op":"start","ids":"all"}; never switch the mode for them. In Manual, tell them to switch it.
 - "cites": for questions about what happened, the ids of the steps your answer is based on (like "st_12").
 
 Answering "what happened":
@@ -99,7 +108,62 @@ export function extractJson(text: string): { reply?: unknown; ops?: unknown; cit
 
 const line = (s: Step) => `[${s.id}] ${s.taskId ?? '-'} ${kind(s)} by ${s.by}: ${s.text}${s.path ? ` (${s.path})` : ''}${s.test ? ` [${s.test.passed} passed, ${s.test.failed} failed]` : ''}`;
 
+// Apply graph edits from the planner (chat or goal check) to the doc; returns the tasks it added or changed.
+export function applyGraphOps(ops: unknown[], why: string, extra: Partial<TaskSpec> = {}): { taskIds: string[]; rejected: string[] } {
+  const all = tasks().toJSON() as Record<string, TaskSpec>;
+  const states = taskState().toJSON() as Record<string, TaskState>;
+  const res = applyOps(all, states, ops, 'planner');
+  for (const id of res.changedIds) if (!all[id]) Object.assign(res.tasks[id], extra);   // e.g. ask: true on new tasks
+  serverWrite(() => {
+    for (const id of res.removed) { tasks().delete(id); taskState().delete(id); }
+    for (const id of new Set([...res.changedIds, ...res.moved])) tasks().set(id, res.tasks[id]);
+    for (const t of Object.values(res.tasks)) if (all[t.id] && all[t.id].deps.join() !== t.deps.join()) tasks().set(t.id, t);
+  });
+  for (const id of res.changedIds) {
+    if (!taskState().has(id)) setTaskState(id, {});
+    else if (all[id] && all[id].spec !== res.tasks[id].spec) specChanged(id, 'planner', res.tasks[id].spec, why);
+  }
+  return { taskIds: res.changedIds, rejected: res.rejected };
+}
+
+// Chat control: start tasks (a person asking counts as their OK) or change the mode. The project's mode is the
+// ceiling: in Manual nothing starts from chat, and the mode changes only when a person explicitly asks.
+async function runControl(o: { op?: string; ids?: unknown; mode?: unknown }, from: string): Promise<string> {
+  const p = current();
+  const mode = p.mode ?? 'auto';
+  if (o.op === 'setMode') {
+    if (o.mode === 'manual' || o.mode === 'semi' || o.mode === 'auto') await setMode(o.mode, from);
+    return '';
+  }
+  if (mode === 'manual') {
+    return `\n\nThis project is in Manual mode${p.modeSetBy ? ` (set by ${p.modeSetBy})` : ''}, so I can't start tasks. Switch the mode to Semi-auto or Automatic, or press Start on a task.`;
+  }
+  const all = tasks().toJSON() as Record<string, TaskSpec>;
+  const ready = readyTasks(all, taskState().toJSON() as Record<string, TaskState>);
+  const asked = o.ids === 'all' ? Object.keys(all) : Array.isArray(o.ids) ? o.ids.filter((id): id is string => typeof id === 'string') : [];
+  const started: string[] = [];
+  for (const id of asked.filter((x) => ready.includes(x))) {
+    try { await startTask(id, from); started.push(all[id].title); } catch { /* the scheduler started it first */ }
+  }
+  const later = asked.filter((id) => all[id] && !ready.includes(id) && !['done', 'running'].includes(taskState().get(id)?.status ?? ''));
+  return (started.length ? `\n\nStarted: ${started.join(', ')}.` : '')
+    + (later.length && mode === 'auto' ? ` The other ${later.length} start as their dependencies finish.` : '')
+    + (later.length && mode === 'semi' ? ` The other ${later.length} start as their dependencies finish, except tasks marked "ask", which wait for an OK.` : '');
+}
+
+export const MODE_NAMES: Record<AutonomyMode, string> = { manual: 'Manual', semi: 'Semi-auto', auto: 'Automatic' };
+
+export async function setMode(mode: AutonomyMode, by: string) {
+  const p = current();
+  if ((p.mode ?? 'auto') === mode && p.modeSetBy) return;
+  await updateProject(p.id, { mode, modeSetBy: by });
+  addStep({ kind: 'mode', by, text: `${by} set the mode to ${MODE_NAMES[mode]}` });
+  resetRounds();
+  schedule();
+}
+
 export async function chat(from: string, text: string) {
+  resetRounds();   // a person spoke: the goal check may run again
   try {
     const all = tasks().toJSON() as Record<string, TaskSpec>;
     const states = taskState().toJSON() as Record<string, TaskState>;
@@ -114,7 +178,9 @@ export async function chat(from: string, text: string) {
       return `- ${t.id} "${t.title}" deps=[${t.deps.join(', ')}] status=${st?.status ?? 'todo'} owner=${st?.owner.name ?? 'agent'}: ${t.spec}`;
     }).join('\n');
     const project = current();
-    const messages: Msg[] = [{ role: 'user', content: `Project: ${project.name}${project.goal ? ` (goal: ${project.goal})` : ''}${project.stack ? `\n\nApproved stack and spec (plan tasks that follow it):\n${project.stack}` : ''}\n\nTasks:\n${graph || '(none)'}\n\nRecent steps:\n${ordered.map(line).join('\n') || '(none)'}\n\n${from} asks: ${text}` }];
+    const mode = project.mode ?? 'auto';
+    const modeLine = `Mode: ${MODE_NAMES[mode]}${project.modeSetBy ? ` (set by ${project.modeSetBy})` : ' (the default)'}`;
+    const messages: Msg[] = [{ role: 'user', content: `Project: ${project.name}${project.goal ? ` (goal: ${project.goal})` : ''}\n${modeLine}${project.stack ? `\n\nApproved stack and spec (plan tasks that follow it):\n${project.stack}` : ''}\n\nTasks:\n${graph || '(none)'}\n\nRecent steps:\n${ordered.map(line).join('\n') || '(none)'}\n\n${from} asks: ${text}` }];
 
     let out = extractJson(await generate({ model: models.planner, system: PLANNER_SYSTEM, messages, maxTokens: 2000 }));
     if (!out) {
@@ -133,23 +199,17 @@ export async function chat(from: string, text: string) {
       cites = sum.stepIds.slice(-5);
     }
 
-    const ops = Array.isArray(out.ops) ? out.ops : [];
+    const raw = Array.isArray(out.ops) ? (out.ops as { op?: string }[]) : [];
+    const control = raw.filter((o) => o?.op === 'start' || o?.op === 'setMode');
+    const ops = raw.filter((o) => !control.includes(o));
     let taskIds: string[] = [];
     if (ops.length) {
-      const res = applyOps(all, states, ops, 'planner');
-      taskIds = res.changedIds;
-      serverWrite(() => {
-        for (const id of res.removed) { tasks().delete(id); taskState().delete(id); }
-        for (const id of res.changedIds) tasks().set(id, res.tasks[id]);
-        for (const t of Object.values(res.tasks)) if (all[t.id] && all[t.id].deps.join() !== t.deps.join()) tasks().set(t.id, t);
-      });
-      for (const id of res.changedIds) {
-        if (!taskState().has(id)) setTaskState(id, {});
-        else if (all[id] && all[id].spec !== res.tasks[id].spec) specChanged(id, 'planner', res.tasks[id].spec, `asked by ${from}`);
-      }
+      const res = applyGraphOps(ops, `asked by ${from}`);
+      taskIds = res.taskIds;
       if (res.rejected.length) reply += `\n\nI could not apply: ${res.rejected.join('; ')}`;
-      schedule();
     }
+    for (const o of control) reply += await runControl(o, from);
+    schedule();
     addChat({ from: 'planner', text: reply || 'Done.', cites: cites.length ? cites : undefined, taskIds: taskIds.length ? taskIds : undefined });
   } catch (e) {
     console.error('Planner failed:', (e as Error).message);

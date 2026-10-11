@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { ARRAYS, MAPS } from '@hive/shared/types';
 import { addChat, addStep, HttpError, getDoc } from './doc.ts';
@@ -6,10 +8,10 @@ import { withRepoLock } from './git.ts';
 import { createRepo, pushMain, remoteFor } from './github.ts';
 import { models, provider } from './llm.ts';
 import { history } from './mongo.ts';
-import { chat, stackDoc, summarize } from './planner.ts';
+import { chat, setMode, stackDoc, summarize } from './planner.ts';
 import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, stopProject, takeover } from './session.ts';
 import {
-  canSee, createProject, current, deleteProject, getProject, inProject, isOwner, listProjects, openProject, projectsFor, setShared, slugOf,
+  canSee, createProject, current, deleteProject, projectDir, getProject, inProject, isOwner, listProjects, openProject, projectsFor, setShared, slugOf,
   updateProject, workspaceDir,
 } from './projects.ts';
 import { runTests } from './runner.ts';
@@ -169,8 +171,26 @@ routes.get('/state', (_req, res) => {
 });
 
 routes.post('/run', (req, res) => {
-  need(req, 'by');
-  res.status(202).json({ started: run() });
+  const { by } = need(req, 'by');
+  res.status(202).json({ started: run(by) });
+});
+
+// Manual / Semi-auto / Automatic (see AutonomyMode in shared/types.ts). Anyone on the project may change it.
+routes.post('/mode', async (req, res) => {
+  const { by, mode } = need(req, 'by', 'mode');
+  if (mode !== 'manual' && mode !== 'semi' && mode !== 'auto') throw new HttpError(400, 'mode must be "manual", "semi" or "auto"');
+  if (authEnabled() && !canSee(current(), by)) throw new HttpError(403, 'Only people on this project can change its mode');
+  await setMode(mode, by);
+  res.json(current());
+});
+
+// Goal-check screenshots (Step.image is "previews/<file>").
+routes.get('/previews/:file', (req, res) => {
+  const file = String(req.params.file);
+  if (!/^[\w.-]+\.png$/.test(file)) throw new HttpError(400, 'Bad file name');
+  const path = join(projectDir(), 'previews', file);
+  if (!existsSync(path)) throw new HttpError(404, 'No such screenshot');
+  res.sendFile(path);
 });
 
 routes.post('/tasks/:id/start', async (req, res) => {

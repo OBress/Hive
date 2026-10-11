@@ -95,6 +95,7 @@ const joinSpec = (spec: string, acc: string[]) => (acc.length ? `${spec.trim()}$
 const DECISION_KIND: Partial<Record<Step['kind'], Decision['kind']>> = {
   'spec-change': 'spec-change', steer: 'graph-change', takeover: 'graph-change', 'human-edit': 'graph-change',
   handback: 'graph-change', handoff: 'graph-change', finish: 'agent-result', merge: 'merge', error: 'conflict', approve: 'push',
+  check: 'check', mode: 'mode',
 };
 
 function build(): HiveState {
@@ -115,7 +116,7 @@ function build(): HiveState {
     const files = [...new Set((byTask[sp.id] ?? []).filter((s) => s.path).map((s) => s.path!))].sort();
     tasks[sp.id] = {
       id: sp.id, title: sp.title, ...splitSpec(sp.spec), dependsOn: sp.deps, files,
-      assignee: st?.owner.kind === 'human' ? st.owner.name : 'agent', x: sp.x, y: sp.y, lastWhy: sp.why,
+      assignee: st?.owner.kind === 'human' ? st.owner.name : 'agent', x: sp.x, y: sp.y, lastWhy: sp.why, ask: sp.ask,
     };
   }
 
@@ -133,7 +134,7 @@ function build(): HiveState {
     if (!kind) return [];
     const title = s.taskId ? specs[s.taskId]?.title ?? s.taskId : '';
     const why = s.kind === 'spec-change' ? /changed the spec: (.+)$/.exec(s.text)?.[1] : undefined;
-    return [{ id: s.id, at: s.at, who: s.by, taskId: s.taskId, kind, summary: title ? `${title}: ${s.text}` : s.text, why, commit: s.commit }];
+    return [{ id: s.id, at: s.at, who: s.by, taskId: s.taskId, kind, summary: title ? `${title}: ${s.text}` : s.text, why, commit: s.commit, image: s.image }];
   });
 
   return { ...EMPTY, ...local, tasks, runs, chat, decisions, taskState, sessions, live, steps };
@@ -162,7 +163,8 @@ function toRun(t: Task, all: Record<string, TaskState>, steps: Step[]): TaskRun 
     commit: last((s) => !!s.commit)?.commit,
     diff: edit?.diff,
     testOutput: test?.test?.output,
-    note: status === 'running' ? plan?.text ?? 'Agent is starting' : st?.note ?? (status === 'done' ? 'Tests pass · merged into main' : ''),
+    note: status === 'running' ? plan?.text ?? 'Agent is starting'
+      : st?.note ?? (status === 'done' ? 'Tests pass · merged into main' : status === 'ready' && t.ask ? 'Marked "ask": in Semi-auto it waits for your OK. Press Start to approve it.' : ''),
     step: test ? Math.min(2 + Math.max(0, t.acceptance.length - 1), total - 2) : 1,
   };
 }
@@ -207,6 +209,17 @@ export function nextTaskId(): string {
 const myName = () => new URLSearchParams(window.location.search).get('name') ?? 'Guest';   // the server replaces it when sign-in is on
 
 // ---- actions (the UI calls only these) ------------------------------------------
+
+// Many positions in one transaction (the layout fix), so other windows see one change.
+export function moveTasks(pos: Record<string, { x: number; y: number }>) {
+  doc().transact(() => { for (const [id, p] of Object.entries(pos)) moveTask(id, p.x, p.y); });
+}
+
+export const setMode = (mode: string) => api('POST', '/mode', { by: myName(), mode }).catch((e) => { fail(e); throw e; });
+
+export function setAsk(id: string, ask: boolean, by: string) {
+  writeSpec(id, { ask: ask || undefined, editedBy: by });
+}
 
 export function moveTask(id: string, x: number, y: number) {
   const cur = specMap().get(id);

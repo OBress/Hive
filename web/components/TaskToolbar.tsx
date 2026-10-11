@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { allFiles, taskMatches } from '@/lib/mentions';
 import { useHive } from '@/lib/mock';
+import ModeSwitch from './ModeSwitch';
 import { displayStatus, StatusSticker } from './Status';
 import { Icon } from './ui';
 
 // Top of the tasks canvas: search (tasks by id/title/spec/checks/files/assignee, plus files) and the
-// "show completed" toggle. Press / anywhere to jump into search.
+// "show completed" toggle, and the project's mode (Manual / Semi-auto / Auto). Press / anywhere to jump into search.
 export default function TaskToolbar({ query, setQuery, showDone, setShowDone, onFocusTask }: {
   query: string; setQuery: (q: string) => void; showDone: boolean; setShowDone: (v: boolean) => void; onFocusTask: (id: string) => void;
 }) {
@@ -92,6 +93,7 @@ export default function TaskToolbar({ query, setQuery, showDone, setShowDone, on
         <span className="hv-check__box"><Icon name="check" size={14} /></span>
         Show completed{doneCount > 0 && <span className="hv-check__count">{doneCount}</span>}
       </label>
+      <ModeSwitch />
     </div>
   );
 }

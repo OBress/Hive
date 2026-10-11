@@ -20,6 +20,7 @@ How the workspace works:
 - Trust only the "Files in the workspace" list and the results of your actions, never your earlier PLAN lines. A file not in that list does not exist yet.
 - You may write only under src/ and test/. You may also read package.json and README.md. ES modules ("type": "module"), Node built-ins only, no dependencies.
 - <test/> runs node --test, which picks up every .js file under test/ automatically; there is no config to check. Each result lists the test files that ran.
+- If the project is something people open (a website, an API with pages, a game), the app starts with "node src/server.js" and listens on process.env.PORT, or it is a static src/index.html. Hive opens it that way to take screenshots. Export the server's start function so tests can import it without it listening on import.
 
 How to do the task:
 - Read only the files you need (dependencies' code is already in src/). Write the src/ file, then write its tests in test/<task id>.test.js (or the test file the spec names) using node:test and node:assert/strict, then run <test/>.

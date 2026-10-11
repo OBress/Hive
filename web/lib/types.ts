@@ -12,6 +12,7 @@ export interface Task {
   assignee: string;           // 'agent' or a person's name
   x: number; y: number;
   lastWhy?: string;
+  ask?: boolean;              // Semi-auto: waits for a person's OK before an agent starts it
 }
 
 export interface TaskRun {
@@ -44,6 +45,7 @@ export interface Conflict {
 
 export interface Decision {
   id: string; at: string; who: string; taskId?: string;
-  kind: 'spec-change' | 'graph-change' | 'agent-result' | 'conflict' | 'merge' | 'push';
+  kind: 'spec-change' | 'graph-change' | 'agent-result' | 'conflict' | 'merge' | 'push' | 'check' | 'mode';
   summary: string; why?: string; commit?: string;
+  image?: string;             // goal-check screenshot, relative to the project's API (previews/<file>)
 }

@@ -24,7 +24,7 @@ hive/
   package.json            root scripts: `pnpm dev` (server + web), `pnpm reset`, `pnpm test`
   AGENTS.md, INTEGRATION.md
   scripts/reset.mjs       deletes every project (data/projects.json, data/projects/)
-  shared/                 `@hive/shared`: types.ts (the contract)
+  shared/                 `@hive/shared`: types.ts (the contract), layout.ts (graph layout for server and web)
   server/                 Node + TS via tsx, Express + Hocuspocus on :4000
     index.ts              HTTP + websocket, doc load/save, startup recovery
     paths.ts              data/ locations
@@ -37,7 +37,9 @@ hive/
     runner.ts             runTests() with node --test (tap)
     agent.ts              coding agent prompt, context builder, parseAction
     session.ts            session loop, scheduler, steer, takeover, handback, handoff
-    graph.ts              graph op validation, cycles, ready set, layout
+    graph.ts              graph op validation, cycles, ready set, what each mode may start, layout
+    verify.ts             the goal check: tests on main, a screenshot, follow-up tasks
+    preview.ts            screenshots of the built app with the local Chrome/Edge (headless)
     planner.ts            chat (graph edits or cited answers), summarize()
     auth.ts               Supabase token verification, middleware, GitHub tokens in memory
     store.ts              MongoDB storage (projects, docs, transcripts, epoch) when MONGODB_URI is set
@@ -83,6 +85,7 @@ Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and 
 - Each task works in its own git worktree `data/projects/<p>/worktrees/<id>` on branch `task/<id>`; finished tasks merge into `main` of that project's `workspace/` under a repo lock.
 - Every agent write and every human edit is its own commit. Agents commit as "Hive Agent"; people commit under their own name (GitHub noreply email when signed in).
 - **Endpoints that start work return 202**; results arrive through the Y.Doc.
+- **Modes** (`Project.mode`, unset = Automatic) decide what starts by itself: Manual nothing; Semi-auto every ready task except ones marked `ask` (they wait for Start); Automatic everything. In Semi-auto and Automatic, when every task is done the goal check (`verify.ts`) tests main, screenshots `src/server.js` or `src/index.html` with the local Chrome, and lets the planner add follow-up tasks (at most 3 rounds until a person speaks). The graph is laid out top to bottom by `shared/layout.ts`, on the server when the planner reshapes it and in the browser when cards overlap.
 
 ## Storage and hosting
 
@@ -113,7 +116,9 @@ The rows below are per project: prefix them with `/api/projects/:project` (e.g. 
 | Method and path | Body | Does |
 |---|---|---|
 | GET /api/state | | JSON snapshot of the doc |
-| POST /api/run | `{by}` | Auto-run: start ready tasks |
+| POST /api/run | `{by}` | Run ready: start every ready task (2 at a time); in Manual the rest of that batch follows, later tasks wait |
+| POST /api/mode | `{mode, by}` | `manual` / `semi` / `auto` (unset = auto); returns the project |
+| GET /api/previews/:file | | A goal-check screenshot (`Step.image`) |
 | POST /api/tasks/:id/start | `{by}` | Start one task (409 unless deps done) |
 | POST /api/sessions/:id/steer | `{from, text}` | Redirect a running agent |
 | POST /api/tasks/:id/takeover | `{by}` | Pause the agent; person becomes owner |

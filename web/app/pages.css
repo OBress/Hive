@@ -733,3 +733,38 @@ button.hv-mention:hover { translate: 0 -2px; box-shadow: 2px 2px 0 var(--ink); }
   .hv-projects__bar { align-items: stretch; }
   .hv-projects__tabs, .hv-select { width: 100%; }
 }
+
+/* ---------- autonomy: mode switch, "ask" tasks, goal-check screenshots ---------- */
+
+.hv-mode { position: relative; }
+.hv-mode__btn {
+  display: inline-flex; align-items: center; gap: 9px; height: 46px; padding: 0 14px 0 14px; cursor: pointer;
+  background: var(--paper); border: var(--border) solid var(--ink); border-radius: 99px; box-shadow: 4px 4px 0 var(--ink);
+  font: 800 14px var(--display); color: var(--ink); white-space: nowrap;
+  transition: translate var(--hover) var(--bounce), box-shadow var(--hover) var(--bounce);
+}
+.hv-mode__btn:hover { translate: -2px -2px; box-shadow: 6px 6px 0 var(--ink); }
+.hv-mode__btn[aria-expanded="true"] svg { rotate: 180deg; }
+.hv-mode__dot { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid var(--ink); background: var(--blue); }
+.hv-mode__dot.hv-mode--manual, .hv-mode--manual .hv-mode__dot { background: var(--paper); }
+.hv-mode__dot.hv-mode--semi, .hv-mode--semi .hv-mode__dot { background: var(--hot); }
+.hv-mode__dot.hv-mode--auto, .hv-mode--auto .hv-mode__dot { background: var(--green); }
+.hv-mode__menu {
+  position: absolute; top: calc(100% + 10px); left: 0; z-index: 20; width: 300px; list-style: none; margin: 0; padding: 6px;
+  background: var(--paper); border: var(--border) solid var(--ink); border-radius: var(--r-md); box-shadow: var(--shadow);
+  animation: hv-pop-in .3s var(--pop) both;
+}
+.hv-mode__menu button { display: grid; gap: 3px; width: 100%; padding: 9px 10px; border: 0; border-radius: 12px; background: none; text-align: left; color: inherit; cursor: pointer; }
+.hv-mode__menu button:hover, .hv-mode__menu button.is-on { background: var(--cream); }
+.hv-mode__menu b { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+.hv-mode__menu b svg { margin-left: auto; }
+.hv-mode__menu em { font-style: normal; font-size: 13px; line-height: 1.35; color: var(--muted); padding-left: 20px; }
+.hv-mode__by { padding: 6px 10px 4px; font: 400 11px var(--mono); color: var(--muted); border-top: 2px solid var(--cream); margin-top: 4px; }
+.hv-node__ask { display: inline-flex; align-items: center; gap: 3px; padding: .15em .55em; font-size: 10px; background: var(--paper); box-shadow: none; }
+.hv-panel__ask { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 2px solid var(--ink); border-radius: var(--r-sm); background: var(--paper); cursor: pointer; }
+.hv-panel__ask input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--ink); flex: none; cursor: pointer; }
+.hv-panel__ask b { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; }
+.hv-panel__ask em { display: block; margin-top: 3px; font-style: normal; font-size: 13px; color: var(--muted); }
+.hv-log__shot { display: block; margin: 8px 0 0; border: 2px solid var(--ink); border-radius: var(--r-sm); overflow: hidden; box-shadow: var(--shadow-sm); }
+.hv-log__shot img { display: block; width: 100%; height: auto; }
+.hv-stage .react-flow__controls-button svg path[fill="none"] { fill: none; }

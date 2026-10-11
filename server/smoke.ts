@@ -101,10 +101,19 @@ try {
   const deleted = await post('/delete', { by: 'Ana' });
   check('rename by a member; delete only by the owner', renamed.name === 'Chores' && refused.status === 403 && deleted.status === 200 && (await projects('Ana')).length === 0 && !existsSync(join(DATA_DIR, 'projects', second.id)));
 
+  // Manual: nothing starts by itself; Run ready starts what is ready, and the next task waits for the next press.
+  const idle = async () => { await new Promise((r) => setTimeout(r, 800)); return state(); };
+  check('Manual mode: nothing starts by itself', Object.values((await idle()).taskState).every((t) => t.status === 'todo'));
   const run = await call('POST', '/run', { by: 'Ana' });
   check('POST /api/run starts store', run.status === 202 && run.json.started?.includes('store'), JSON.stringify(run.json));
   await until('store done', (s) => s.taskState.store?.status === 'done');
   check('store finishes and merges into main', true);
+  check('Manual mode: redirect waits for the next Run ready', (await idle()).taskState.redirect?.status === 'todo');
+
+  // Semi-auto (no task is marked "ask" here): the graph keeps moving by itself from now on.
+  const semi = await call('POST', '/mode', { by: 'Ana', mode: 'semi' });
+  check('POST /mode semi saves the mode and starts redirect', semi.status === 200 && semi.json.mode === 'semi' && semi.json.modeSetBy === 'Ana'
+    && !!(await until('redirect started', (s) => s.taskState.redirect?.status === 'running')));
 
   // Redirect: Ben steers the running agent.
   const sid = await until('redirect running', (s) => s.taskState.redirect?.status === 'running' && s.taskState.redirect.sessionId);
@@ -149,6 +158,8 @@ try {
 
   const s = await until('all tasks done', (st) => Object.values(st.taskState).every((t) => t.status === 'done') && st, 90000);
   check('all four tasks are done', Object.keys(s.taskState).length === 4);
+  const goal = await until('goal check', (st) => st.steps.find((x) => x.kind === 'check'), 60000);
+  check('when every task is done, the goal check tests main and reports', !!goal.test && goal.test.failed === 0 && goal.test.passed > 0, goal.text);
 
   const approve = await call('POST', '/approve', { by: 'Ana' });
   check('approve passes tests on main', approve.status === 200 && approve.json.ok === true, `commit ${approve.json.commit}, pushed ${approve.json.pushed}`);
