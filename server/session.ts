@@ -8,7 +8,7 @@ import {
 } from './doc.ts';
 import { AGENT, personAuthor, type GitUser } from './git.ts';
 import { autoStartable, readyTasks, waitingForOk } from './graph.ts';
-import { generate, models, type Msg } from './llm.ts';
+import { agentMaxTokens, generate, models, type Msg } from './llm.ts';
 import { saveTranscript } from './history.ts';
 import { openCodeOn, search } from './opencode.ts';
 import { current, currentId, inProject, sessionsDir, workspaceDir } from './projects.ts';
@@ -237,7 +237,7 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
   let reply: string;
   try {
     reply = await generate({
-      model: models.agent, system: AGENT_SYSTEM + (openCodeOn() ? SEARCH_HELP : ''), messages, signal: ctrl.signal,
+      model: models.agent, system: AGENT_SYSTEM + (openCodeOn() ? SEARCH_HELP : ''), messages, signal: ctrl.signal, maxTokens: agentMaxTokens(),
       onToken: (d) => {
         text += d;
         if (Date.now() - last >= 150) flush();

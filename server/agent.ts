@@ -45,7 +45,8 @@ export type Action =
   | { type: 'finish'; summary: string };
 
 export function parseAction(raw: string): { plan: string; action?: Action; error?: string } {
-  const text = raw.replace(/<think>[\s\S]*?<\/think>/g, '');
+  // Drop reasoning, including an unclosed <think> left by a reply that hit the output limit.
+  const text = raw.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/, '');
   // The PLAN line, or failing that the first line of prose before any action (models sometimes drop the label).
   const labeled = /^[\s*#]*PLAN\**:\**\s*(.+)$/im.exec(text)?.[1];
   const prose = text.split(/<(?:read|search|write|test|run|finish)\b/)[0].split('\n').map((l) => l.trim()).find(Boolean);
@@ -60,7 +61,12 @@ export function parseAction(raw: string): { plan: string; action?: Action; error
   ].map(({ re, make }) => { const m = re.exec(text); return m ? { index: m.index, action: make(m) as Action } : null; })
     .filter((x) => x !== null)
     .sort((a, b) => a.index - b.index)[0];
-  if (!found) return { plan, error: 'no action found' };
+  if (!found) {
+    // A reply that hit the output limit mid-file leaves an unclosed <write>; say so, or the model repeats it.
+    const cut = /<write\s+path="[^"]*"\s*>/.test(text) ? 'your <write> was cut off before </write> because the reply was too long; write a shorter file, splitting it into several smaller files if needed'
+      : text.trim() === '' && /<think>/.test(raw) ? 'the reply ran out while thinking; think less and act' : '';
+    return { plan, error: cut || 'no action found' };
+  }
   const action = found.action;
   if (action.type === 'read' || action.type === 'write') {
     const p = safePath(action.path, action.type === 'read');

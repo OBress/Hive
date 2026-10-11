@@ -50,6 +50,10 @@ export async function initModels() {
   console.log(`LLM provider ${provider}: agent=${models.agent || '-'} planner=${models.planner || '-'}`);
 }
 
+// Agent replies carry whole files (plus any reasoning), so they get far more room than planner calls.
+// OpenAI-compatible providers often cap output at 8192; raise AGENT_MAX_TOKENS if yours allows more.
+export const agentMaxTokens = () => Number(process.env.AGENT_MAX_TOKENS) || (provider === 'anthropic' ? 16000 : 8192);
+
 // A small semaphore so we never run more than MAX_PARALLEL + 1 calls at once.
 const limit = Number(process.env.MAX_PARALLEL || 2) + 1;
 let active = 0;

@@ -31,6 +31,11 @@ test('rejects unsafe paths and missing actions', () => {
   expect(parseAction('PLAN: just thinking').action).toBeUndefined();
 });
 
+test('explains a reply cut off at the output limit', () => {
+  expect(parseAction('PLAN: x\n<write path="src/big.js">\nexport const a = [1, 2,').error).toMatch(/cut off/);
+  expect(parseAction('<think>first I will <test/> and then').error).toMatch(/ran out while thinking/);
+});
+
 test('messages alternate and end with the user', () => {
   const m = buildMessages('ctx', [{ role: 'user', content: 'go' }, { role: 'assistant', content: 'PLAN: a\n<test/>' }]);
   expect(m.map((x) => x.role)).toEqual(['user', 'assistant', 'user']);
