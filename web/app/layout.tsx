@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import './pages.css';
 import './landing.css';
+import AuthGate from '@/components/AuthGate';
 
 export const metadata: Metadata = {
   title: 'Hive',
@@ -20,7 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* eslint-disable-next-line @next/next/no-page-custom-font */}
         <link rel="stylesheet" href={FONTS} />
       </head>
-      <body>{children}</body>
+      <body><AuthGate>{children}</AuthGate></body>
     </html>
   );
 }

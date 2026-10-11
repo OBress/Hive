@@ -1,138 +1,134 @@
 # AGENTS.md: Hive
 
-Instructions for AI coding agents working in this repo. Read this file first, then `SPEC.md` (the full demo build doc) and `shared/types.ts` (the data contract).
+Instructions for AI coding agents working in this repo. Read this file first, then `shared/types.ts` (the data contract) and `INTEGRATION.md` (how the web app talks to the server).
 
 ## What this is
 
-Hive is a **hackathon demo build**: a 90-second live demo of humans and AI agents co-editing a landing page in one live workspace. It must work **every time on one laptop**. Every agent call is a real LLM call; everything else is the simplest code that makes the five demo stages happen:
+Hive is **"Google Docs for coding agents"**: a team shares one live task graph, every agent session is visible to everyone, and anyone can **watch** an agent work, **redirect** it mid-run, **take over** a task and **hand it back** (or hand it to a teammate) with full context. It targets YC's Fall 2026 Multiplayer AI request (Track 1B at the c0mpiled hackathon). The demo runs on one laptop; a second laptop joins over the LAN.
 
-1. **Shared collaboration**: live section edits across windows; the Design agent restyles a section; the Engineering agent builds the site section by section.
-2. **Human interruption**: a requirement change while a section is generating marks it stale, aborts it and rebuilds only that section.
-3. **Agent conflict + resolution**: two Design requests that clash (or break CTA contrast) open a Conflict; an AI-merged option is applied if it passes the rule, otherwise a human picks A or B.
-4. **Shared memory**: Ask answers "why" questions from the recorded decision log, citing decision ids.
-5. **Deploy**: Publish runs four deterministic checks and writes a static page served at `/site/`.
+The 90-second demo:
 
-Optimize for demo reliability and readability over generality. Do not build anything the demo doesn't show.
+1. Ana types a goal in chat, or the seeded graph is loaded; a task graph appears on every screen.
+2. Agents start on ready tasks. Everyone sees each agent's steps stream live: its plan, the file it is writing, tests going red then green.
+3. Ben types into the Stats agent's session: "count unique visitors, not hits." The agent acknowledges at its next step and changes course.
+4. Ana takes over a task, edits a file and hands it back; the agent continues from her edit. She reassigns another task to Ben, who gets an auto-written summary.
+5. Cal asks in chat "what happened on stats?" and gets an answer citing the exact steps.
+6. Approve: tests pass on main and it is pushed to GitHub, with commits from agents and people.
+
+Optimize for demo reliability and readability over generality.
 
 ## Monorepo layout
 
 ```
 hive/
-  package.json         root scripts: `pnpm dev` (server + web), `pnpm reset`
-  pnpm-workspace.yaml  workspaces: shared, server, web
-  AGENTS.md            this file
-  SPEC.md              full demo build doc (source of truth for behavior)
-  .env                 ANTHROPIC_API_KEY + model names (never committed; copy .env.example)
-  scripts/reset.mjs    deletes data/doc.bin
-  shared/              package `@hive/shared` (raw TS, no build step)
-    types.ts           the ONLY contract between web/ and server/ (frozen), plus DOC_NAME, MAPS, ports
-    seed.json          Nav, Hero (animated gradient), Features, Footer
-  server/              Node + TS via tsx, Express + Hocuspocus on :4000   (owner: Person B)
-    index.ts           HTTP + websocket, doc load/save, getDoc(), /site static route
-    orchestrator.ts    versions, staleness observer, tasks, abort/restart, conflict check
-    agents.ts          design(), engineer(), mergeConflict(), ask(); all prompts live here
-    checks.ts          contrast() + publish checks
-    publish.ts         page template + write to data/published/v<n>/
-  web/                 Next.js (App Router) + React + TS on :5173         (owner: Person A)
-    lib/hive.ts        HocuspocusProvider singleton + hooks: useYMap, useStatus, useUserName, apiUrl
-    app/page.tsx       3 columns: editor | canvas + preview | panels
-    components/
-      Editor.tsx       section list, field inputs, add section, "why?" popover
-      Canvas.tsx       renders sections from fields (design view)
-      Preview.tsx      sandboxed iframe srcdoc built from the code map (site view)
-      Presence.tsx     avatars for humans and agents
-      Panels.tsx       tasks, conflict card, history + Ask, publish + QR
-  data/                runtime only, gitignored: doc.bin, published/v<n>/
+  package.json            root scripts: `pnpm dev` (server + web), `pnpm reset`, `pnpm test`
+  AGENTS.md, INTEGRATION.md
+  scripts/reset.mjs       deletes data/doc.bin, workspace, worktrees, sessions
+  shared/                 `@hive/shared`: types.ts (the contract), seed.json (URL shortener graph)
+  server/                 Node + TS via tsx, Express + Hocuspocus on :4000
+    index.ts              HTTP + websocket, doc load/save, seed, startup recovery
+    paths.ts              data/ locations
+    doc.ts                getDoc/setDoc and typed helpers; serverWrite(fn)
+    llm.ts                generate() for openai (Luminal) / anthropic / fake; model selection
+    git.ts                git via execFile; withRepoLock()
+    workspace.ts          workspace repo, per-task worktrees, safePath, commits, diffs, merge
+    runner.ts             runTests() with node --test (tap)
+    agent.ts              coding agent prompt, context builder, parseAction
+    session.ts            session loop, scheduler, steer, takeover, handback, handoff
+    graph.ts              graph op validation, cycles, ready set, layout
+    planner.ts            chat (graph edits or cited answers), summarize()
+    auth.ts               Supabase token verification, middleware, GitHub tokens in memory
+    mongo.ts              optional MongoDB mirror + history reads
+    routes.ts             all Express routes
+    settings.ts           /api/config, doc epoch, push repo, env status
+    smoke.ts              end-to-end demo check with LLM_PROVIDER=fake
+    workspace-template/   the project agents build (copied to data/workspace)
+  web/                    Next.js client-only SPA on :5173 (owner: Owen)
+  data/                   runtime only, gitignored: doc.bin, workspace/, worktrees/, sessions/
 ```
 
-Files not yet created are planned; create them where listed.
-
-Target size is about 2,000 lines total. If a change makes a file much bigger than its job, stop and simplify.
+Target about 1,500 lines for all of `server/`. If a file grows past its job, simplify.
 
 ## Commands
 
 ```bash
-pnpm i          # install
-pnpm dev        # server on :4000 and web on :5173
-pnpm reset      # delete data/doc.bin so the next start loads shared/seed.json
-pnpm test       # unit tests (contrast() and publish checks at minimum)
+pnpm i                         # install
+pnpm dev                       # server on :4000 and web on :5173
+pnpm reset                     # wipe data/ state so the next start loads the seed
+pnpm test                      # unit tests (vitest in server/)
+pnpm --filter server typecheck
+pnpm --filter server smoke     # full demo against the fake provider
 ```
 
-Open `localhost:5173/?name=Maya`, `?name=Sam`, `?name=Priya` in separate browser profiles or incognito windows. The published site is at `localhost:4000/site/` (or the laptop's LAN IP for a phone).
-
-Scripts must be cross-platform (we develop on Windows and demo on macOS): use Node scripts or cross-platform tools in `package.json`, never `rm -rf`, `cp` or shell-specific syntax.
+Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and no API key.
 
 ## Ownership rules (most important)
 
-- **Work only in the folder you were assigned.** A Person A session edits only `web/`. A Person B session edits only `server/`. If you weren't told, ask.
-- **Never edit `shared/`.** `shared/types.ts` and `shared/seed.json` are frozen after setup. If the contract truly needs to change, stop and tell the human; both people must agree.
-- Root files (`package.json`, `.gitignore`, `AGENTS.md`) change only when a human asks.
+- **Owen owns `web/`.** Server sessions never edit, format, move or delete anything in `web/`. Report web issues instead.
+- The server side owns `server/`. Root files and `shared/` change only when both people agree.
+- `shared/types.ts` is the contract. Import types from it; never redefine them.
 
 ## Architecture invariants
 
-- **One Y.Doc** named `"hive"` holds all app state, synced by Hocuspocus. Top-level keys: `sections`, `code`, `tasks`, `conflicts` (Y.Maps) and `decisions` (Y.Array). The UI reads everything from the doc; there is no other client state worth syncing.
-- **Browsers write only `sections`** (including `requirement` and `lastWhy`). The server writes `code`, `tasks`, `conflicts` and `decisions`. The web app never writes those four.
-- **No database.** The server saves the encoded doc to `data/doc.bin` every 2 s and loads it on start; otherwise it seeds from `shared/seed.json`. Server code reads and writes the doc only via `getDoc()` from `server/index.ts` (the Hocuspocus-managed instance, kept loaded by a direct connection); never construct a separate `Y.Doc`.
-- **Versioning is one in-memory counter per section** (`versions[sectionId]`), bumped on every human edit. `CodeUnit.builtFromVersion < versions[id]` means stale. Don't add more versioning than that.
-- **Agent writes never stale themselves.** Wrap every server write to the doc with the `applyingAgentWrite` flag (or a transaction origin) so the sections observer ignores it.
-- **Every Design agent write goes through `applyDesignPatch`**: compare against the task's start snapshot, run the contrast rule, and open a Conflict instead of writing on failure. Agents never silently overwrite.
-- **Endpoints start work and return 202**; results arrive through the Y.Doc. Exceptions: `/api/ask` returns `{answer, decisionIds}`, `/api/publish` returns `{url, checks}`.
+- **One Y.Doc** named `"hive"` holds all live state, synced by Hocuspocus. Keys: maps `tasks`, `taskState`, `sessions`, `live`; arrays `steps`, `chat`.
+- **Browsers write only `tasks`** (create, edit `title`/`spec`/`deps`/`x`/`y`/`editedBy`/`why`, delete). Everything else is server-only; browsers act through REST.
+- **The server writes inside `serverWrite(fn)`** (`doc.transact(fn, 'server')`). Observers ignore origin `'server'`. Store plain JSON only (`clean()` strips `undefined`).
+- Server code reads the doc only through `server/doc.ts` (the Hocuspocus-managed instance kept loaded by a direct connection). Never construct a separate `Y.Doc`.
+- The doc is saved to `data/doc.bin` every 2 s. Agent transcripts live in `data/sessions/<id>.json`, never in the doc.
+- Each task works in its own git worktree `data/worktrees/<id>` on branch `task/<id>`; finished tasks merge into `main` of `data/workspace` under a repo lock.
+- Every agent write and every human edit is its own commit. Agents commit as "Hive Agent"; people commit under their own name (GitHub noreply email when signed in).
+- **Endpoints that start work return 202**; results arrive through the Y.Doc.
 
-| Endpoint | Body |
-|---|---|
-| `POST /api/design` | `{sectionId, instruction, by}` |
-| `POST /api/build` | `{by}` |
-| `POST /api/conflicts/:id/resolve` | `{choice: 'A' \| 'B' \| 'merged', by}` |
-| `POST /api/ask` | `{question}` |
-| `POST /api/publish` | `{by}` |
+## Auth
+
+Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tables. When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set, every non-GET `/api/*` call needs `Authorization: Bearer <access token>` and the server replaces `by`/`from` with the verified GitHub login; the websocket requires the same token. The person's GitHub `provider_token` is kept in server memory only, for pushing on Approve. With Supabase unset, auth is off and `by`/`from` come from the body.
+
+## Endpoints
+
+| Method and path | Body | Does |
+|---|---|---|
+| GET /api/health | | `{ok, tasks, provider, models}` |
+| GET /api/state | | JSON snapshot of the doc |
+| POST /api/run | `{by}` | Auto-run: start ready tasks |
+| POST /api/tasks/:id/start | `{by}` | Start one task (409 unless deps done) |
+| POST /api/sessions/:id/steer | `{from, text}` | Redirect a running agent |
+| POST /api/tasks/:id/takeover | `{by}` | Pause the agent; person becomes owner |
+| GET /api/tasks/:id/files | | `{files}` |
+| GET /api/tasks/:id/file?path= | | `{path, content}` |
+| PUT /api/tasks/:id/file | `{path, content, by}` | Human edit, committed as that person |
+| POST /api/tasks/:id/handback | `{by, note}` | Agent resumes from the person's edits |
+| POST /api/tasks/:id/handoff | `{by, to, note}` | Reassign; returns `{summary}` |
+| GET /api/tasks/:id/summary | | `{summary, stepIds}` |
+| POST /api/chat | `{from, text}` | Planner reply appended to chat |
+| GET /api/history?taskId= | | Steps for a task |
+| POST /api/approve | `{by}` | Test main, push to GitHub |
+| GET /api/config | | `{auth, supabaseUrl, supabaseAnonKey, epoch, repo}` |
+| POST /api/repo | `{repo}` | Set the push target (owner/repo) |
+| GET/POST /api/env | `{name, value}` | Which vars are set; write one (server machine only) |
+| GET /api/me | | `{user, githubConnected}` |
+| POST /api/github/token | `{providerToken}` | Keep GitHub token in memory |
+
+Errors are always `{error: "message"}` with a proper status code. Full examples are in `INTEGRATION.md`.
 
 ## Dependencies
 
-Pinned list: `yjs`, `@hocuspocus/server`, `@hocuspocus/provider` (both v4), `express` (v5), `@anthropic-ai/sdk`, `next` (v16), `react`, `react-dom` (v19), `qrcode`, plus TypeScript tooling (`typescript`, `tsx`, `@types/*`) and a test runner (`vitest`, server only). **Do not add anything else** without a human's OK. Write the 15 lines yourself instead.
+`yjs`, `@hocuspocus/server`, `@hocuspocus/provider` (v4), `express` (v5), `@anthropic-ai/sdk`, `@supabase/supabase-js`, `mongodb`, `next` (v16), `react`, `react-dom` (v19), `qrcode`, plus TypeScript tooling and `vitest`. **Nothing else** without a human's OK: use Node built-ins and `fetch`. Call git with `child_process.execFile`, never a shell.
 
-## Hive's own LLM agents (server/agents.ts)
+## Secrets
 
-- Only the server holds `ANTHROPIC_API_KEY`, read from `.env`. Never expose it to `web/`, logs, or the doc.
-- Model names come from `.env`: fast model while building, stronger model for Engineering in final rehearsals.
-- **Design agent** returns strict JSON: a patch object containing only allowed `Section` fields. Validate keys and value types (hex colors, enum `animation`).
-- **Engineering agent** returns only an HTML snippet: one root element with `data-section="<id>"`, Tailwind classes, the exact headline text, **no `<script>`**. Strip any script tags and inline handlers regardless. Revise mode gets the old code plus what changed.
-- **Ask** gets the whole decision log plus the question and must cite decision ids.
-- **Merge** produces one option satisfying both intents with CTA contrast ≥ 3:1.
-- Validate every response; **retry once** on bad output, then mark the task `failed`.
-- Engineering calls must support `AbortController`: abort on stale, debounce 1.5 s, restart with max 3 restarts, then ask a human.
-- Hero generation should take 8 s or more so there's time to interrupt on stage; ask for richer markup in the Hero prompt if it's faster.
+API keys and tokens come from `.env` (or server memory for GitHub provider tokens). Never write them to the Y.Doc, logs, commits, step text or HTTP responses. Agent test runs get a minimal environment with no keys.
 
-## Safety
+## Cross-platform
 
-- The preview iframe uses `sandbox="allow-scripts"` and **never** `allow-same-origin`.
-- Agent HTML is script-stripped; the publish template injects only the Tailwind CDN script.
-- Contrast rule (WCAG relative luminance): CTA background vs section background ≥ 3:1, CTA text vs CTA background ≥ 4.5:1. `contrast()` must have unit tests.
-
-## Publish checks (server/checks.ts)
-
-All four must pass before writing `data/published/v<n>/index.html`:
-1. Every section has code with status `ready` and not stale.
-2. Each section's HTML contains its headline text.
-3. Sections with `animation: 'none'` contain no `animate-` classes or `@keyframes`.
-4. CTA contrast passes the rule above.
-
-## UI conventions (web/)
-
-- Next.js is used as a **client-only SPA**: the Hive UI is `'use client'` components. No API routes, server actions or server components that fetch data; the Node server on :4000 is the only backend. Next 16 has breaking changes, so check `web/node_modules/next/dist/docs/` before relying on remembered APIs (see `web/AGENTS.md`, which `next dev` regenerates).
-- Get the doc only through `lib/hive.ts` (`getProvider().document`); never create a second provider. Build server URLs with `apiUrl()` so a LAN IP works.
-- Name comes from `?name=`; use it for Hocuspocus awareness and as `by` in every request.
-- Statuses (generating / stale / restarting / conflict / done) must be **big and readable from the back of a room**: color plus text, not color alone.
-- When a requirement changes, show the "why?" popover and write the answer to the section's `lastWhy`.
-- Clicking a cited decision id highlights that decision and its section.
+We develop on Windows and demo on macOS. Use `path.join`, `fs.rmSync(..., {recursive: true, force: true})`, `fs.cpSync`, `execFile`. Never `rm -rf`, `cp` or shell syntax in code or scripts.
 
 ## How to work
 
-- **Small steps with a visible result.** "Make two windows sync the sections map", not "build the editor". After each step, say how to verify it in the browser.
-- Keep it simple: no abstractions, state libraries, routers or CSS frameworks in the app beyond what's listed. Plain React state plus the Y.Doc.
-- TypeScript everywhere; import types from `shared/types.ts`, never redefine them.
-- Commit every 20 to 30 minutes with a clear message so a bad generation is one `git checkout` away. Don't commit `.env` or `data/`.
-- Run `pnpm reset` before testing a full demo run.
+- Small steps with a visible result; say how to verify each.
+- Keep it simple: no abstractions beyond what the demo shows.
+- Commit often with a clear message. Don't commit `.env` or `data/`.
+- Run `pnpm reset` before a full demo run; run `pnpm --filter server smoke` after server changes.
 
 ## Cut order (if behind schedule)
 
-Cut in this order: QR code → merged conflict option (human picks A or B) → LLM in Ask (show matching decisions instead) → Add section menu (Features already in the seed). Nothing new after 4:15.
+Cut in this order: MongoDB mirror → chat graph edits (keep catch-up answers) → GitHub push (keep the local merge) → hand off to a person (keep takeover and handback). Never cut the live stream, steer, or takeover and handback: they are the pitch.

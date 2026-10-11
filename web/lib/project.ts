@@ -4,6 +4,8 @@
 // repo the person types in. Everything else on the Overview is derived from live state.
 
 import { useSyncExternalStore } from 'react';
+import { authHeaders, loadConfig } from './auth';
+import { apiUrl } from './hive';
 
 export const PROJECT = {
   name: 'url-shortener',
@@ -21,12 +23,22 @@ export const STACK: { group: string; items: { name: string; note: string }[] }[]
 
 export interface Commit { sha: string; message: string; author: string; branch: string; at: number /* ms */ }
 
-// The push target the person enters. Kept in this tab until the server stores it (POST /api/repo).
+// The push target (owner/repo), stored on the server: Approve pushes there. Shared by every tab.
 let repo: string | null = null;
+let loaded = false;
 const listeners = new Set<() => void>();
-const sub = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
+const emit = () => listeners.forEach((l) => l());
+const sub = (l: () => void) => {
+  if (!loaded) { loaded = true; loadConfig().then((c) => { repo = c.repo; emit(); }, () => { loaded = false; }); }
+  listeners.add(l);
+  return () => { listeners.delete(l); };
+};
 export const useRepo = () => useSyncExternalStore(sub, () => repo, () => repo);
-export function connectRepo(r: string | null) { repo = r; listeners.forEach((l) => l()); }
+export function connectRepo(r: string | null) {
+  fetch(apiUrl('/api/repo'), { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ repo: r }) })
+    .then((res) => res.json())
+    .then((j: { repo?: string | null; error?: string }) => { if (!j.error) { repo = j.repo ?? null; emit(); } }, () => {});
+}
 
 export function timeAgo(ms: number, now: number): string {
   const s = Math.max(0, Math.round((now - ms) / 1000));

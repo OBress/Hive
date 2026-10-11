@@ -1,57 +1,74 @@
 // The only contract between web/ and server/. Frozen after setup: change only if both people agree.
 
-export type SectionType = 'nav' | 'hero' | 'features' | 'cta' | 'footer';
+export type TaskStatus = 'todo' | 'running' | 'paused' | 'needs_review' | 'done' | 'failed';
 
-export interface Section {           // ydoc.getMap('sections'), written by humans + Design agent
-  id: string; type: SectionType; order: number;
-  headline: string; subtext: string; ctaText: string;
-  items: string[];                   // feature cards, nav links
-  bg: string; fg: string; ctaBg: string; ctaFg: string;   // hex colors
-  animation: 'none' | 'gradient' | 'fade';
-  requirement: string;               // what the section must do, in words
-  lastWhy?: string;                  // reason typed with the last requirement change
+export interface TaskSpec {          // ydoc.getMap('tasks'): written by browsers and by the server's Planner
+  id: string;
+  title: string;
+  spec: string;                      // what to build, in words
+  deps: string[];                    // ids of tasks that must be done first
+  x: number; y: number;              // position on the graph
+  editedBy?: string;                 // who made the last edit (browsers set it)
+  why?: string;                      // reason typed with the last spec change
+  createdBy: string;
 }
 
-export interface CodeUnit {          // ydoc.getMap('code'), written by the server
-  html: string;                      // Tailwind HTML snippet, no <script>
-  builtFromVersion: number;          // section version it was generated from
-  status: 'generating' | 'ready' | 'stale' | 'error';
+export interface Owner { kind: 'agent' | 'human'; name: string }   // agent: name 'agent'
+
+export interface TaskState {         // ydoc.getMap('taskState'): server only
+  taskId: string;
+  status: TaskStatus;
+  owner: Owner;
+  sessionId?: string;
+  branch?: string;                   // task/<id>
+  lastTest?: { passed: number; failed: number };
+  note?: string;                     // short reason for paused / failed / needs_review
+  updatedAt: string;
 }
 
-export interface Task {              // ydoc.getMap('tasks'), written by the server
-  id: string; agent: 'design' | 'engineering';
-  sectionId: string; instruction: string;
-  status: 'running' | 'stale' | 'restarting' | 'done' | 'failed';
-  startedAtVersion: number; restarts: number; note: string; requestedBy: string;
+export interface SessionView {       // ydoc.getMap('sessions'): server only; the transcript stays on the server
+  id: string; taskId: string;
+  state: 'running' | 'paused' | 'done' | 'failed';
+  summary: string;                   // Done / Left / Tried / Open, shown on hand-off and catch-up
+  stepCount: number;
+  startedBy: string;
+  updatedAt: string;
 }
 
-export interface Conflict {          // ydoc.getMap('conflicts'), written by the server
-  id: string; sectionId: string;
-  reason: string;                    // 'CTA contrast 1.4:1 < 3:1' or 'both changed headline'
-  optionA: Partial<Section>; optionB: Partial<Section>; merged?: Partial<Section>;
-  mergedPasses: boolean;
-  status: 'open' | 'auto-resolved' | 'resolved';
-  resolution?: string; rule?: string;
+export type StepKind =
+  | 'plan' | 'read' | 'edit' | 'test' | 'finish'
+  | 'steer' | 'spec-change' | 'takeover' | 'human-edit' | 'handback' | 'handoff'
+  | 'merge' | 'error' | 'approve';
+
+export interface Step {              // ydoc.getArray('steps'): server only, append-only
+  id: string; n: number;             // n: global order
+  taskId?: string; sessionId?: string;
+  kind: StepKind;
+  by: string;                        // 'agent' or a person's name
+  text: string;                      // one line for the feed
+  path?: string;                     // file touched
+  diff?: string;                     // unified diff, trimmed to 4,000 chars
+  test?: { passed: number; failed: number; output: string };
+  commit?: string;                   // short hash
+  at: string;
 }
 
-export interface Decision {          // ydoc.getArray('decisions'), appended by the server
-  id: string; at: string;
-  kind: 'requirement-change' | 'agent-change' | 'conflict' | 'publish';
-  sectionId?: string; who: string;
-  summary: string;                   // 'Hero: animated gradient -> static image'
-  why?: string;                      // the human's one-line reason
-  details?: Record<string, unknown>; // before/after values, check results
+export interface ChatMessage {       // ydoc.getArray('chat'): server only (browsers post via REST)
+  id: string; from: string; text: string;
+  cites?: string[];                  // step ids an answer is based on
+  taskIds?: string[];                // tasks the Planner created or changed
+  at: string;
 }
 
 // Y.Doc layout
 export const DOC_NAME = 'hive';
 export const MAPS = {
-  sections: 'sections',
-  code: 'code',
-  tasks: 'tasks',
-  conflicts: 'conflicts',
+  tasks: 'tasks',                    // TaskSpec, browsers + server
+  taskState: 'taskState',            // TaskState, server only
+  sessions: 'sessions',              // SessionView, server only
+  live: 'live',                      // sessionId -> text the agent is writing right now, server only
 } as const;
-export const DECISIONS = 'decisions';
+export const ARRAYS = { steps: 'steps', chat: 'chat' } as const;
 
 export const SERVER_PORT = 4000;
 export const WEB_PORT = 5173;

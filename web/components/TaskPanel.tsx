@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { usePeers } from '@/lib/hive';
 import { runReady, updateTask, useHive } from '@/lib/mock';
 import type { Task, TaskRun } from '@/lib/types';
+import LiveSession from './LiveSession';
 import RunSteps from './RunSteps';
 import { displayStatus, StatusSticker } from './Status';
 import { Avatar, Icon, tilt } from './ui';
@@ -90,6 +91,8 @@ function Body({ task, run, me, onClose }: { task: Task; run?: TaskRun; me: strin
           </button>
         )}
       </div>
+
+      <LiveSession id={task.id} me={me} />
 
       <section className="hv-field">
         <label className="hv-label" htmlFor="spec">Spec</label>

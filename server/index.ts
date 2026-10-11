@@ -1,41 +1,51 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Server } from '@hocuspocus/server';
 import * as Y from 'yjs';
-import { DOC_NAME, MAPS, SERVER_PORT, type Section } from '@hive/shared/types';
+import { DOC_NAME, MAPS, SERVER_PORT, type TaskSpec } from '@hive/shared/types';
 import seed from '@hive/shared/seed.json' with { type: 'json' };
+import { authMiddleware, initAuth, wsAuthenticate } from './auth.ts';
+import { getDoc, setDoc } from './doc.ts';
+import { initModels } from './llm.ts';
+import { initMongo } from './mongo.ts';
+import { DATA_DIR, DOC_FILE } from './paths.ts';
+import { errorHandler, routes } from './routes.ts';
+import { getEpoch, initEpoch, settings } from './settings.ts';
+import { recover, watchTasks } from './session.ts';
+import { ensureWorkspace } from './workspace.ts';
 
-const DATA_DIR = fileURLToPath(new URL('../data/', import.meta.url));
-const DOC_FILE = DATA_DIR + 'doc.bin';
-const PORT = Number(process.env.PORT ?? SERVER_PORT);
+const PORT = Number(process.env.PORT || SERVER_PORT);
+let doc: Y.Doc | null = null;
+let saver: NodeJS.Timeout | undefined;
+const save = () => writeFileSync(DOC_FILE, Y.encodeStateAsUpdate(getDoc()));
 
 // Fill a freshly created doc from data/doc.bin, or from the seed on first run / after `pnpm reset`.
 function loadInto(doc: Y.Doc) {
   if (existsSync(DOC_FILE)) {
     Y.applyUpdate(doc, readFileSync(DOC_FILE));
+    initEpoch(false);
     console.log('Loaded data/doc.bin');
     return;
   }
-  const sections = doc.getMap<Section>(MAPS.sections);
+  const tasks = doc.getMap<TaskSpec>(MAPS.tasks);
   doc.transact(() => {
-    for (const s of seed.sections as Section[]) sections.set(s.id, s);
-  });
+    for (const t of seed.tasks as TaskSpec[]) tasks.set(t.id, t);
+  }, 'server');
+  initEpoch(true);
   console.log('Loaded shared/seed.json');
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
   if (req.method === 'OPTIONS') return void res.sendStatus(204);
   next();
 });
-
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, sections: getDoc().getMap(MAPS.sections).size });
-});
+app.use('/api', authMiddleware, settings, routes);
+app.use(errorHandler);
 
 const server = new Server({
   name: 'hive',
@@ -44,6 +54,9 @@ const server = new Server({
     if (documentName !== DOC_NAME) throw new Error(`Unknown document ${documentName}`);
     loadInto(document);
   },
+  onAuthenticate: (data) => wsAuthenticate(data, getEpoch()),
+  // Our direct connection keeps the doc loaded, so Hocuspocus's own shutdown would wait forever.
+  stopOnSignals: false,
   // Hand plain HTTP requests to Express; rejecting with null skips Hocuspocus's default response.
   onRequest({ request, response }) {
     return new Promise((_resolve, reject) => {
@@ -53,19 +66,26 @@ const server = new Server({
   },
 });
 
-// A server-side connection keeps the doc loaded even with no browsers open,
-// and is the handle the orchestrator and agents use to read and write it.
-let doc: Y.Doc | null = null;
-export function getDoc(): Y.Doc {
-  if (!doc) throw new Error('Doc not loaded yet');
-  return doc;
-}
-
+mkdirSync(DATA_DIR, { recursive: true });
+await ensureWorkspace();
+initAuth();
+await Promise.all([initModels(), initMongo()]);
 await server.listen(PORT);
+
+// A server-side connection keeps the doc loaded even with no browsers open; server code uses it via doc.ts.
 const direct = await server.hocuspocus.openDirectConnection(DOC_NAME);
 doc = direct.document!;
-
-mkdirSync(DATA_DIR, { recursive: true });
-setInterval(() => writeFileSync(DOC_FILE, Y.encodeStateAsUpdate(getDoc())), 2000);
+setDoc(doc);
+recover();
+watchTasks();
+saver = setInterval(save, 2000);
+// Save once and exit on Ctrl+C / kill, so no orphan keeps writing an old doc to data/doc.bin.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    clearInterval(saver);
+    if (doc) save();
+    process.exit(0);
+  });
+}
 
 console.log(`Hive server on http://localhost:${PORT} (ws doc "${DOC_NAME}")`);
