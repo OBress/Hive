@@ -14,6 +14,10 @@ const PATHS = {
   plus: 'M12 5v14M5 12h14',
   link: 'M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1',
   bolt: 'M13 3L5 13h6l-1 8 8-10h-6z',
+  search: 'M10.5 17a6.5 6.5 0 100-13 6.5 6.5 0 000 13zM15.5 15.5L20 20',
+  pencil: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
+  lock: 'M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 017 0v3',
+  copy: 'M9 9h10v10H9zM5 15V5h10',
 } as const;
 
 export type IconName = keyof typeof PATHS;

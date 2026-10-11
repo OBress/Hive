@@ -2,13 +2,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { DEMO_REQUEST, sendChat, useHive } from '@/lib/mock';
-import type { ChatMessage, Decision } from '@/lib/types';
+import type { ChatMessage, Decision, Task } from '@/lib/types';
+import Composer, { RichText } from './Composer';
 import { Avatar, clock, Icon, isAgent, nameColor, tilt } from './ui';
 
-export default function Chat({ me, onFocusTask }: { me: string; onFocusTask: (id: string) => void }) {
+export default function Chat({ me, onFocusTask, onSearch }: { me: string; onFocusTask: (id: string) => void; onSearch: (q: string) => void }) {
   const s = useHive();
   const [tab, setTab] = useState<'chat' | 'log'>('chat');
-  const [text, setText] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -16,10 +16,9 @@ export default function Chat({ me, onFocusTask }: { me: string; onFocusTask: (id
     listRef.current?.scrollTo({ top: tab === 'chat' ? listRef.current.scrollHeight : 0, behavior: 'smooth' });
   }, [s.chat.length, s.thinking, s.decisions.length, tab]);
 
-  const send = (t = text) => {
+  const send = (t: string) => {
     if (!t.trim() || s.thinking) return;
     sendChat(t.trim(), me);
-    setText('');
     setTab('chat');
   };
   const citeTask = (id: string) => {
@@ -29,7 +28,7 @@ export default function Chat({ me, onFocusTask }: { me: string; onFocusTask: (id
 
   const specChange = [...s.decisions].reverse().find((d) => d.kind === 'spec-change' && d.taskId);
   const suggestions = !Object.keys(s.tasks).length ? [DEMO_REQUEST]
-    : specChange ? [`Why did ${s.tasks[specChange.taskId!]?.title ?? specChange.taskId} change?`] : [];
+    : specChange ? [`Why did @${specChange.taskId} change?`] : [];
 
   return (
     <aside className="hv-chat">
@@ -52,7 +51,7 @@ export default function Chat({ me, onFocusTask }: { me: string; onFocusTask: (id
                 <p>Ask for changes to the plan or ask why something happened. The Planner answers both.</p>
               </div>
             )}
-            {s.chat.map((m) => <Message key={m.id} m={m} me={me} onFocusTask={onFocusTask} onCite={citeTask} />)}
+            {s.chat.map((m) => <Message key={m.id} m={m} me={me} tasks={s.tasks} onFocusTask={onFocusTask} onCite={citeTask} onSearch={onSearch} />)}
             {s.thinking && (
               <div className="hv-msg hv-msg--agent hv-msg--planner">
                 <div className="hv-msg__meta"><Avatar name="planner" agent size={28} /> <b>Planner</b></div>
@@ -75,22 +74,17 @@ export default function Chat({ me, onFocusTask }: { me: string; onFocusTask: (id
             ))}
           </div>
         )}
-        <div className="hv-composer">
-          <textarea rows={2} value={text} placeholder={`Message as ${me}…`} aria-label="Chat message"
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
-          <button className="hv-btn hv-btn--hot hv-composer__send" onClick={() => send()} disabled={!text.trim() || s.thinking} aria-label="Send">
-            <Icon name="send" />
-          </button>
-        </div>
+        <Composer me={me} tasks={s.tasks} disabled={s.thinking} onSend={send} />
       </footer>
     </aside>
   );
 }
 
-function Message({ m, me, onFocusTask, onCite }: { m: ChatMessage; me: string; onFocusTask: (id: string) => void; onCite: (id: string) => void }) {
+function Message({ m, me, tasks, onFocusTask, onCite, onSearch }: {
+  m: ChatMessage; me: string; tasks: Record<string, Task>; onFocusTask: (id: string) => void; onCite: (id: string) => void; onSearch: (q: string) => void;
+}) {
   const agent = isAgent(m.from);
-  const tasks = (m.ops ?? []).flatMap((o) => (o.op === 'addTask' && o.task.id ? [{ id: o.task.id, title: o.task.title ?? o.task.id }] : []));
+  const added = (m.ops ?? []).flatMap((o) => (o.op === 'addTask' && o.task.id ? [{ id: o.task.id, title: o.task.title ?? o.task.id }] : []));
   const edgeCount = (m.ops ?? []).filter((o) => o.op === 'addEdge').length;
 
   return (
@@ -101,10 +95,10 @@ function Message({ m, me, onFocusTask, onCite }: { m: ChatMessage; me: string; o
         <time>{clock(m.at)}</time>
       </div>
       <div className="hv-bubble" style={agent ? undefined : { borderLeftColor: nameColor(m.from) }}>
-        {m.text}
-        {(tasks.length > 0 || edgeCount > 0) && (
+        <RichText text={m.text} tasks={tasks} onTask={onFocusTask} onFile={onSearch} />
+        {(added.length > 0 || edgeCount > 0) && (
           <div className="hv-ops">
-            {tasks.map((t) => (
+            {added.map((t) => (
               <button key={t.id} className="hv-sticker hv-sticker--op" onClick={() => onFocusTask(t.id)}>+ {t.title}</button>
             ))}
             {edgeCount > 0 && <span className="hv-sticker hv-sticker--op is-muted">+{edgeCount} edges</span>}

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { usePeers } from '@/lib/hive';
 import { runReady, updateTask, useHive } from '@/lib/mock';
 import type { Task, TaskRun } from '@/lib/types';
+import RunSteps from './RunSteps';
 import { displayStatus, StatusSticker } from './Status';
 import { Avatar, Icon, tilt } from './ui';
 
@@ -32,6 +33,10 @@ function Body({ task, run, me, onClose }: { task: Task; run?: TaskRun; me: strin
   const [asking, setAsking] = useState(false);
   const [why, setWhy] = useState('');
   const [newFile, setNewFile] = useState('');
+  const [copied, setCopied] = useState(false);
+  const copyRef = () => {
+    navigator.clipboard?.writeText(`@${task.id}`).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }, () => {});
+  };
   const status = displayStatus(task, run);
   const peers = usePeers();
   // Assignable: the agent, this person, everyone connected, and whoever holds it now.
@@ -53,16 +58,25 @@ function Body({ task, run, me, onClose }: { task: Task; run?: TaskRun; me: strin
   return (
     <>
       <header className="hv-panel__head">
-        <span className="hv-sticker hv-sticker--ink" style={tilt(task.id, 2)}>#{task.id}</span>
+        <div className="hv-panel__id">
+          <span className="hv-sticker hv-sticker--ink" style={tilt(task.id, 2)} title="Task ID: stays the same when the task is renamed">#{task.id}</span>
+          <button className="hv-linkbtn hv-panel__copy" onClick={copyRef} title="Copy a chat reference to this task">
+            <Icon name="copy" size={14} /> {copied ? 'Copied' : `@${task.id}`}
+          </button>
+        </div>
         <button className="hv-iconbtn" onClick={onClose} aria-label="Close panel"><Icon name="close" /></button>
       </header>
 
-      <input className="hv-panel__title" value={task.title} aria-label="Title"
-        onChange={(e) => updateTask(task.id, { title: e.target.value }, me)} />
+      <label className="hv-panel__rename">
+        <input className="hv-panel__title" value={task.title} aria-label="Task name (click to rename)"
+          onChange={(e) => updateTask(task.id, { title: e.target.value }, me)} />
+        <span className="hv-panel__pencil" aria-hidden="true"><Icon name="pencil" size={16} /></span>
+      </label>
 
       <div className={`hv-runbox hv-s-${status}`}>
         <StatusSticker status={status} size="lg" />
         <p className="hv-runbox__note">{run?.note || (status === 'human' ? `Assigned to ${task.assignee}; the Builder skips it.` : 'Waiting for its dependencies.')}</p>
+        {(task.assignee === 'agent' || run) && <RunSteps task={task} run={run} />}
         {run && run.status !== 'todo' && run.status !== 'ready' && (
           <dl className="hv-runbox__meta">
             <div><dt>branch</dt><dd>{run.branch}</dd></div>

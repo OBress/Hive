@@ -11,6 +11,7 @@ const TABS = [
   { href: '/overview', label: 'Overview' },
   { href: '/tasks', label: 'Tasks' },
   { href: '/architecture', label: 'Architecture' },
+  { href: '/environment', label: 'Environment' },
 ];
 
 // Shared header for every page: logo, page tabs, presence, and page-specific actions on the right.
@@ -35,7 +36,7 @@ export default function TopBar({ me, openTaskId, children }: { me: string; openT
       </Link>
       <span className="hv-wordbox">url-shortener</span>
 
-      <nav className="hv-tabs" style={{ '--i': active } as React.CSSProperties} aria-label="Pages">
+      <nav className="hv-tabs" style={{ '--i': active, '--n': TABS.length } as React.CSSProperties} aria-label="Pages">
         <span className="hv-tabs__pill" />
         {TABS.map((t, i) => (
           <Link key={t.href} href={`${t.href}${q}`} className={i === active ? 'is-on' : ''} aria-current={i === active ? 'page' : undefined}>

@@ -6,6 +6,7 @@
 // actions with Yjs writes to `tasks` + POSTs to the API. Components shouldn't change.
 
 import { useSyncExternalStore } from 'react';
+import { runSteps } from './steps';
 import type { ChatMessage, Conflict, Decision, Task, TaskRun } from './types';
 
 export interface HiveState {
@@ -24,23 +25,23 @@ export interface HiveState {
 export const DEMO_REQUEST = 'Build a URL shortener API: create, redirect, stats, with tests.';
 
 const PLAN: Task[] = [
-  { id: 'create', title: 'Create short link', x: 40, y: 40, dependsOn: [], assignee: 'agent',
+  { id: 'T1', title: 'Create short link', x: 40, y: 40, dependsOn: [], assignee: 'agent',
     spec: 'POST /links takes {url}, validates it and returns {code, short} with 201. Codes are 6 characters, base62.',
     acceptance: ['POST /links returns 201 and a 6-char code', 'Invalid URLs return 400'],
     files: ['src/app.js', 'src/store.js', 'test/create.test.js'] },
-  { id: 'redirect', title: 'Redirect', x: 440, y: 40, dependsOn: [], assignee: 'agent',
+  { id: 'T2', title: 'Redirect', x: 440, y: 40, dependsOn: [], assignee: 'agent',
     spec: 'GET /:code responds 302 to the stored URL and records the click.',
     acceptance: ['Known code redirects with 302', 'Unknown code returns 404'],
     files: ['src/app.js', 'test/redirect.test.js'] },
-  { id: 'stats', title: 'Click stats', x: 40, y: 320, dependsOn: ['create', 'redirect'], assignee: 'agent',
+  { id: 'T3', title: 'Click stats', x: 40, y: 320, dependsOn: ['T1', 'T2'], assignee: 'agent',
     spec: 'GET /links/:code/stats returns total clicks and the time of the last click.',
     acceptance: ['Returns clicks for a known code', 'Returns 404 for an unknown code'],
     files: ['src/stats.js', 'test/stats.test.js'] },
-  { id: 'readme', title: 'README', x: 440, y: 320, dependsOn: ['create', 'redirect'], assignee: 'agent',
+  { id: 'T4', title: 'README', x: 440, y: 320, dependsOn: ['T1', 'T2'], assignee: 'agent',
     spec: 'Document the three endpoints with a curl example each.',
     acceptance: ['Lists every endpoint with an example'],
     files: ['README.md'] },
-  { id: 'e2e', title: 'End-to-end test', x: 40, y: 600, dependsOn: ['stats'], assignee: 'agent',
+  { id: 'T5', title: 'End-to-end test', x: 40, y: 600, dependsOn: ['T3'], assignee: 'agent',
     spec: 'One test that creates a link, follows it twice and checks the stats.',
     acceptance: ['create → redirect → stats flow passes'],
     files: ['test/e2e.test.js'] },
@@ -102,6 +103,12 @@ export function downstreamOf(id: string): string[] {
   return out;
 }
 
+// Short, stable task ids (T1, T2, …): titles can be renamed freely, the id never changes.
+export function nextTaskId(): string {
+  const n = Math.max(0, ...Object.keys(state.tasks).map((k) => Number(k.replace(/^T/, '')) || 0));
+  return `T${n + 1}`;
+}
+
 // ---- scheduler -------------------------------------------------------------
 
 function refreshReady() {
@@ -135,10 +142,23 @@ function startRun(id: string) {
   putRun(id, {
     status: 'running', builtFromVersion: versions[id] ?? 0,
     note: restarts[id] ? `Rebuilding with the new spec (restart ${restarts[id]}/3)` : 'Builder is writing code',
-    commit: undefined, diff: undefined, testOutput: undefined,
+    commit: undefined, diff: undefined, testOutput: undefined, step: 1,
   });
-  const ms = id === 'stats' ? 9000 : 3500 + Math.random() * 2000;
+  const ms = id === 'T3' ? 9000   // Stats builds slowly so there's time to change its spec on stage
+    : 3500 + Math.random() * 2000;
   timers.set(id, setTimeout(() => finishRun(id), ms));
+
+  // Walk the checkpoints (write code, each test, commit) evenly across the run; merge happens in finishRun.
+  const steps = runSteps(state.tasks[id]);
+  const working = steps.length - 2;
+  const version = versions[id] ?? 0;
+  for (let i = 2; i <= working; i++) {
+    setTimeout(() => {
+      const r = state.runs[id];
+      if (r?.status !== 'running' || r.builtFromVersion !== version) return;   // aborted or restarted
+      putRun(id, { step: i, note: steps[i].startsWith('Test: ') ? `Testing: ${steps[i].slice(6)}` : steps[i] === 'Commit' ? 'Committing to the task branch' : steps[i] });
+    }, ((i - 1) / working) * ms);
+  }
 }
 
 function finishRun(id: string) {
@@ -309,7 +329,7 @@ function planner(text: string, by: string) {
   if (isQuestion && state.decisions.length) return answer(text);
   if (!Object.keys(state.tasks).length) return createPlan(by);
 
-  const id = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 18) || nid('t');
+  const id = nextTaskId();
   const lowest = Math.max(...Object.values(state.tasks).map((t) => t.y));
   putTask({ id, title: text.slice(0, 40), spec: text, acceptance: [], dependsOn: [], files: [], assignee: 'agent', x: 440, y: lowest + 280 });
   log({ who: 'planner', taskId: id, kind: 'graph-change', summary: `Added task ${id} from ${by}'s message` });
@@ -333,9 +353,10 @@ function createPlan(by: string) {
 }
 
 function answer(q: string) {
-  const words = q.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
-  const hits = state.decisions.filter((d) =>
-    words.some((w) => `${d.summary} ${d.why ?? ''} ${d.taskId ?? ''}`.toLowerCase().includes(w))).slice(-3);
+  const mentioned = [...q.matchAll(/@(T\d+)/gi)].map((m) => m[1].toUpperCase());
+  const words = q.replace(/@\S+/g, ' ').toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+  const hits = state.decisions.filter((d) => (d.taskId && mentioned.includes(d.taskId))
+    || words.some((w) => `${d.summary} ${d.why ?? ''}`.toLowerCase().includes(w))).slice(-3);
   const why = [...hits].reverse().find((d) => d.why);
   const result = why && [...state.decisions].reverse().find((d) =>
     d.taskId === why.taskId && (d.kind === 'agent-result' || d.kind === 'merge') && d.at > why.at);
