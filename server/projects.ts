@@ -25,9 +25,9 @@ export const listProjects = () => list;
 export const getProject = (id: string) => list.find((p) => p.id === id);
 
 // The id is a slug of the name plus a random suffix, so a deleted project's id (and stale tabs on it) never comes back.
+export const slugOf = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'project';
 export function createProject(name: string, goal: string, createdBy: string): Project {
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'project';
-  const p: Project = { id: `${slug}-${randomBytes(2).toString('hex')}`, name, goal, repo: null, createdBy, createdAt: new Date().toISOString() };
+  const p: Project = { id: `${slugOf(name)}-${randomBytes(2).toString('hex')}`, name, goal, repo: null, createdBy, createdAt: new Date().toISOString() };
   list.push(p);
   save();
   mkdirSync(join(DIR, p.id), { recursive: true });

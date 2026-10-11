@@ -1,12 +1,13 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { addChat, addStep, HttpError, getDoc } from './doc.ts';
 import { githubTokens, authEnabled } from './auth.ts';
-import { git, withRepoLock } from './git.ts';
+import { withRepoLock } from './git.ts';
+import { createRepo, pushMain, remoteFor } from './github.ts';
 import { models, provider } from './llm.ts';
 import { history } from './mongo.ts';
 import { chat, summarize } from './planner.ts';
 import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, takeover } from './session.ts';
-import { createProject, current, getProject, inProject, listProjects, openProject, updateProject, workspaceDir } from './projects.ts';
+import { createProject, current, getProject, inProject, listProjects, openProject, slugOf, updateProject, workspaceDir } from './projects.ts';
 import { runTests } from './runner.ts';
 import { pushRemote } from './settings.ts';
 import { head, listFiles, readFile, safePath } from './workspace.ts';
@@ -43,8 +44,26 @@ api.post('/projects', async (req, res) => {
   const p = createProject(name, opt(req, 'goal').slice(0, 500), opt(req, 'by') || 'Guest');
   await openProject(p);
   console.log(`Project ${p.id} created by ${p.createdBy}`);
-  res.status(201).json(p);
+  const repoError = req.body?.createRepo === false ? undefined : await giveRepo(p.id, res.locals.githubToken || process.env.GITHUB_TOKEN);
+  res.status(201).json({ ...getProject(p.id), repoError });
 });
+
+// Every new project gets its own private GitHub repo (under the creator's account), set as its push target and
+// seeded with the starting files. Failing here never fails the project; the reason goes back as repoError.
+async function giveRepo(id: string, token: string | undefined): Promise<string | undefined> {
+  if (!token) return 'No GitHub repo was created: sign in with GitHub (or set GITHUB_TOKEN). You can connect one on Overview.';
+  const p = getProject(id)!;
+  try {
+    const repo = await createRepo(token, slugOf(p.name), p.id, p.goal || `${p.name}, built with Hive`);
+    updateProject(id, { repo });
+    console.log(`Project ${id}: created GitHub repo ${repo}`);
+    await inProject(id, () => withRepoLock(() => pushMain(workspaceDir(), remoteFor(repo), token)));
+    return undefined;
+  } catch (e) {
+    console.error(`Project ${id}: ${(e as Error).message}`);
+    return (e as Error).message;
+  }
+}
 
 api.get('/me', (_req, res) => {
   const user = res.locals.user ?? null;
@@ -165,12 +184,11 @@ routes.post('/approve', async (req, res) => {
     let pushed = false;
     let pushError: string | undefined;
     if (remote && token) {
-      const authed = remote.replace(/^https:\/\//, `https://x-access-token:${encodeURIComponent(token)}@`);
       try {
-        await git(repo, ['-c', 'credential.helper=', 'push', authed, 'main:main']);
+        await pushMain(repo, remote, token);
         pushed = true;
       } catch (e) {
-        pushError = (e as Error).message.split(authed).join(remote).split(token).join('***').split(encodeURIComponent(token)).join('***');
+        pushError = (e as Error).message;
         addStep({ kind: 'error', by, text: `Push failed: ${pushError.slice(0, 300)}`, commit });
       }
     }

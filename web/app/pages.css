@@ -615,6 +615,9 @@ button.hv-mention:hover { translate: 0 -2px; box-shadow: 2px 2px 0 var(--ink); }
 .hv-projects__new label { display: grid; gap: 6px; }
 .hv-projects__new label span { font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
 .hv-projects__new .hv-btn { align-self: flex-start; }
+.hv-projects__new label.hv-projects__check { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.hv-projects__check input { width: 20px; height: 20px; accent-color: var(--ink); }
+.hv-projects__new label.hv-projects__check span { font: 700 15px var(--display); text-transform: none; letter-spacing: -0.01em; }
 .hv-projects__err { margin: 0; padding: 8px 12px; background: var(--paper); border: 2px solid var(--ink); border-radius: var(--r-sm); font-size: 14px; }
 .hv-projects__msg { padding: 40px; text-align: center; font: 400 14px var(--mono); }
 .hv-top > .hv-projectswitch { display: inline-flex; text-decoration: none; align-items: center; gap: 4px; max-width: 220px; flex-shrink: 0; }

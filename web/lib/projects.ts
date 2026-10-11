@@ -74,8 +74,9 @@ async function send<T>(method: string, path: string, body: unknown): Promise<T> 
   return json as T;
 }
 
-export async function createProject(name: string, goal: string, by: string): Promise<Project> {
-  const p = await send<Project>('POST', '/projects', { name, goal, by });
+// With createRepo, the server also makes a private GitHub repo for it; repoError says why if it could not.
+export async function createProject(name: string, goal: string, by: string, createRepo: boolean): Promise<Project & { repoError?: string }> {
+  const p = await send<Project & { repoError?: string }>('POST', '/projects', { name, goal, by, createRepo });
   await reloadProjects();
   return p;
 }

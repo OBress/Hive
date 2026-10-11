@@ -67,8 +67,11 @@ function ProjectCard({ p, me, recent }: { p: Project; me: string; recent: boolea
 function NewProject({ me, first }: { me: string; first: boolean }) {
   const [name, setName] = useState('');
   const [goal, setGoal] = useState('');
+  const [repo, setRepo] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [made, setMade] = useState<Project | null>(null);   // created, but its GitHub repo was not
+  const open = (p: Project) => { window.location.href = `/tasks${appQuery(me, p.id)}`; };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -76,8 +79,11 @@ function NewProject({ me, first }: { me: string; first: boolean }) {
     setBusy(true);
     setErr('');
     try {
-      const p = await createProject(name.trim(), goal.trim(), me);
-      window.location.href = `/tasks${appQuery(me, p.id)}`;
+      const p = await createProject(name.trim(), goal.trim(), me, repo);
+      if (!p.repoError) return open(p);
+      setMade(p);
+      setErr(p.repoError);
+      setBusy(false);
     } catch (x) {
       setErr((x as Error).message);
       setBusy(false);
@@ -89,7 +95,7 @@ function NewProject({ me, first }: { me: string; first: boolean }) {
       <h2><Icon name="plus" size={20} /> {first ? 'Start your first project' : 'New project'}</h2>
       <label>
         <span>Name</span>
-        <input className="hv-input" value={name} maxLength={60} placeholder="To-do app" onChange={(e) => setName(e.target.value)} required />
+        <input className="hv-input" value={name} maxLength={60} placeholder="To-do app" onChange={(e) => setName(e.target.value)} required disabled={!!made} />
       </label>
       <label>
         <span>Goal</span>
@@ -97,10 +103,18 @@ function NewProject({ me, first }: { me: string; first: boolean }) {
           placeholder="What are you building? The planner reads this when you plan in chat."
           onChange={(e) => setGoal(e.target.value)} />
       </label>
-      {err && <p className="hv-projects__err">{err}</p>}
-      <button className="hv-btn hv-btn--ink" disabled={!name.trim() || busy}>
-        {busy ? <><i className="hv-spinner" /> Creating…</> : <>Create project <Icon name="arrow" size={16} /></>}
-      </button>
+      <label className="hv-projects__check">
+        <input type="checkbox" checked={repo} onChange={(e) => setRepo(e.target.checked)} disabled={!!made} />
+        <span>Create a private GitHub repo for it</span>
+      </label>
+      {err && <p className="hv-projects__err">{made ? `${made.name} was created. ` : ''}{err}</p>}
+      {made ? (
+        <button type="button" className="hv-btn hv-btn--ink" onClick={() => open(made)}>Open {made.name} <Icon name="arrow" size={16} /></button>
+      ) : (
+        <button className="hv-btn hv-btn--ink" disabled={!name.trim() || busy}>
+          {busy ? <><i className="hv-spinner" /> {repo ? 'Creating project and repo…' : 'Creating…'}</> : <>Create project <Icon name="arrow" size={16} /></>}
+        </button>
+      )}
     </form>
   );
 }

@@ -28,6 +28,7 @@ hive/
   server/                 Node + TS via tsx, Express + Hocuspocus on :4000
     index.ts              HTTP + websocket, doc load/save, startup recovery
     paths.ts              data/ locations
+    github.ts             create a project's GitHub repo, push main (fetch + git, token scrubbed from errors)
     projects.ts           project list, per-project folders, the current-project context (AsyncLocalStorage)
     doc.ts                getDoc/setDoc and typed helpers; serverWrite(fn)
     llm.ts                generate() for openai (Luminal) / anthropic / fake; model selection
@@ -92,7 +93,7 @@ Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tabl
 |---|---|---|
 | GET /api/health | | `{ok, projects, provider, models}` |
 | GET /api/projects | | `{projects}` |
-| POST /api/projects | `{name, goal, by}` | 201 the new project |
+| POST /api/projects | `{name, goal, by, createRepo?}` | 201 the new project; also creates its private GitHub repo unless `createRepo: false` (`repoError` if that fails) |
 | GET /api/config | | `{auth, supabaseUrl, supabaseAnonKey, epoch}` |
 | GET/POST /api/env | `{name, value}` | Which vars are set; write one (server machine only) |
 | GET /api/me | | `{user, githubConnected}` |
