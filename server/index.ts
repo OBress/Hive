@@ -14,6 +14,9 @@ import { recover, watchTasks } from './session.ts';
 import { ensureWorkspace } from './workspace.ts';
 
 const PORT = Number(process.env.PORT || SERVER_PORT);
+let doc: Y.Doc | null = null;
+let saver: NodeJS.Timeout | undefined;
+const save = () => writeFileSync(DOC_FILE, Y.encodeStateAsUpdate(getDoc()));
 
 // Fill a freshly created doc from data/doc.bin, or from the seed on first run / after `pnpm reset`.
 function loadInto(doc: Y.Doc) {
@@ -49,6 +52,8 @@ const server = new Server({
     loadInto(document);
   },
   onAuthenticate: wsAuthenticate,
+  // Our direct connection keeps the doc loaded, so Hocuspocus's own shutdown would wait forever.
+  stopOnSignals: false,
   // Hand plain HTTP requests to Express; rejecting with null skips Hocuspocus's default response.
   onRequest({ request, response }) {
     return new Promise((_resolve, reject) => {
@@ -66,9 +71,18 @@ await server.listen(PORT);
 
 // A server-side connection keeps the doc loaded even with no browsers open; server code uses it via doc.ts.
 const direct = await server.hocuspocus.openDirectConnection(DOC_NAME);
-setDoc(direct.document!);
+doc = direct.document!;
+setDoc(doc);
 recover();
 watchTasks();
-setInterval(() => writeFileSync(DOC_FILE, Y.encodeStateAsUpdate(getDoc())), 2000);
+saver = setInterval(save, 2000);
+// Save once and exit on Ctrl+C / kill, so no orphan keeps writing an old doc to data/doc.bin.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    clearInterval(saver);
+    if (doc) save();
+    process.exit(0);
+  });
+}
 
 console.log(`Hive server on http://localhost:${PORT} (ws doc "${DOC_NAME}")`);
