@@ -24,3 +24,11 @@ export function withRepoLock<T>(fn: () => Promise<T>): Promise<T> {
   chain = run.catch(() => {});
   return run;
 }
+
+// A person's commits: their GitHub noreply address when signed in, so GitHub links the commit to them.
+export interface GitUser { login: string; name: string; githubId: string }
+export function personAuthor(name: string, user?: GitUser): Author {
+  if (user) return { name: user.name || user.login, email: `${user.githubId}+${user.login}@users.noreply.github.com` };
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.|\.$/g, '') || 'someone';
+  return { name, email: `${slug}@hive.local` };
+}

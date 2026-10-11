@@ -1,14 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Server } from '@hocuspocus/server';
 import * as Y from 'yjs';
 import { DOC_NAME, MAPS, SERVER_PORT, type TaskSpec } from '@hive/shared/types';
 import seed from '@hive/shared/seed.json' with { type: 'json' };
+import { getDoc, setDoc } from './doc.ts';
+import { initModels } from './llm.ts';
+import { DATA_DIR, DOC_FILE } from './paths.ts';
+import { errorHandler, routes } from './routes.ts';
+import { recover, watchTasks } from './session.ts';
+import { ensureWorkspace } from './workspace.ts';
 
-const DATA_DIR = fileURLToPath(new URL('../data/', import.meta.url));
-const DOC_FILE = DATA_DIR + 'doc.bin';
-const PORT = Number(process.env.PORT ?? SERVER_PORT);
+const PORT = Number(process.env.PORT || SERVER_PORT);
 
 // Fill a freshly created doc from data/doc.bin, or from the seed on first run / after `pnpm reset`.
 function loadInto(doc: Y.Doc) {
@@ -20,22 +23,21 @@ function loadInto(doc: Y.Doc) {
   const tasks = doc.getMap<TaskSpec>(MAPS.tasks);
   doc.transact(() => {
     for (const t of seed.tasks as TaskSpec[]) tasks.set(t.id, t);
-  });
+  }, 'server');
   console.log('Loaded shared/seed.json');
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
   if (req.method === 'OPTIONS') return void res.sendStatus(204);
   next();
 });
-
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, tasks: getDoc().getMap(MAPS.tasks).size });
-});
+app.use('/api', routes);
+app.use(errorHandler);
 
 const server = new Server({
   name: 'hive',
@@ -53,19 +55,16 @@ const server = new Server({
   },
 });
 
-// A server-side connection keeps the doc loaded even with no browsers open,
-// and is the handle the orchestrator and agents use to read and write it.
-let doc: Y.Doc | null = null;
-export function getDoc(): Y.Doc {
-  if (!doc) throw new Error('Doc not loaded yet');
-  return doc;
-}
-
-await server.listen(PORT);
-const direct = await server.hocuspocus.openDirectConnection(DOC_NAME);
-doc = direct.document!;
-
 mkdirSync(DATA_DIR, { recursive: true });
+await ensureWorkspace();
+await initModels();
+await server.listen(PORT);
+
+// A server-side connection keeps the doc loaded even with no browsers open; server code uses it via doc.ts.
+const direct = await server.hocuspocus.openDirectConnection(DOC_NAME);
+setDoc(direct.document!);
+recover();
+watchTasks();
 setInterval(() => writeFileSync(DOC_FILE, Y.encodeStateAsUpdate(getDoc())), 2000);
 
 console.log(`Hive server on http://localhost:${PORT} (ws doc "${DOC_NAME}")`);
