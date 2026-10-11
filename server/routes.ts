@@ -1,5 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { addChat, addStep, HttpError, getDoc, tasks } from './doc.ts';
+import { githubTokens, authEnabled } from './auth.ts';
 import { git, withRepoLock } from './git.ts';
 import { models, provider } from './llm.ts';
 import { chat, summarize } from './planner.ts';
@@ -25,7 +26,7 @@ const id = (req: Request) => String(req.params.id);
 export const routes = Router();
 
 routes.get('/health', (_req, res) => {
-  res.json({ ok: true, tasks: tasks().size, provider, models });
+  res.json({ ok: true, tasks: tasks().size, provider, models, auth: authEnabled() });
 });
 
 routes.get('/state', (_req, res) => {
@@ -124,6 +125,19 @@ routes.post('/approve', async (req, res) => {
     return { status: 200, body: { ok: true, commit, pushed, url, pushError } };
   });
   res.status(result.status).json(result.body);
+});
+
+routes.get('/me', (_req, res) => {
+  const user = res.locals.user ?? null;
+  res.json({ user, githubConnected: !!user && githubTokens.has(user.id) });
+});
+
+routes.post('/github/token', (req, res) => {
+  const { providerToken } = need(req, 'providerToken');
+  const user = res.locals.user;
+  if (!user) throw new HttpError(400, 'Sign-in is off on this server; set GITHUB_TOKEN in .env to push');
+  githubTokens.set(user.id, providerToken);
+  res.json({ ok: true });
 });
 
 routes.use((_req, _res) => { throw new HttpError(404, 'Not found'); });

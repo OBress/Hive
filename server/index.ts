@@ -4,6 +4,7 @@ import { Server } from '@hocuspocus/server';
 import * as Y from 'yjs';
 import { DOC_NAME, MAPS, SERVER_PORT, type TaskSpec } from '@hive/shared/types';
 import seed from '@hive/shared/seed.json' with { type: 'json' };
+import { authMiddleware, initAuth, wsAuthenticate } from './auth.ts';
 import { getDoc, setDoc } from './doc.ts';
 import { initModels } from './llm.ts';
 import { DATA_DIR, DOC_FILE } from './paths.ts';
@@ -36,7 +37,7 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return void res.sendStatus(204);
   next();
 });
-app.use('/api', routes);
+app.use('/api', authMiddleware, routes);
 app.use(errorHandler);
 
 const server = new Server({
@@ -46,6 +47,7 @@ const server = new Server({
     if (documentName !== DOC_NAME) throw new Error(`Unknown document ${documentName}`);
     loadInto(document);
   },
+  onAuthenticate: wsAuthenticate,
   // Hand plain HTTP requests to Express; rejecting with null skips Hocuspocus's default response.
   onRequest({ request, response }) {
     return new Promise((_resolve, reject) => {
@@ -57,6 +59,7 @@ const server = new Server({
 
 mkdirSync(DATA_DIR, { recursive: true });
 await ensureWorkspace();
+initAuth();
 await initModels();
 await server.listen(PORT);
 
