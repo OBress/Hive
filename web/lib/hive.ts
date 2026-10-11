@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { HocuspocusProvider } from '@hocuspocus/provider';
-import { DOC_NAME, SERVER_PORT } from '@hive/shared/types';
-import { accessToken, initAuth, loadConfig, useAuth } from './auth';
+import { DOC_NAME } from '@hive/shared/types';
+import { accessToken, initAuth, loadConfig, serverUrl, useAuth } from './auth';
 
 // One provider per browser tab. The server host follows the page host so a LAN IP works too.
 let provider: HocuspocusProvider | null = null;
@@ -11,7 +11,7 @@ let provider: HocuspocusProvider | null = null;
 export function getProvider(): HocuspocusProvider {
   if (!provider) {
     provider = new HocuspocusProvider({
-      url: `ws://${window.location.hostname}:${SERVER_PORT}`,
+      url: serverUrl().replace(/^http/, 'ws'),
       name: DOC_NAME,
       // The doc epoch this page loaded with, plus the Supabase access token when sign-in is on.
       token: async () => {
@@ -26,7 +26,7 @@ export function getProvider(): HocuspocusProvider {
   return provider;
 }
 
-export const apiUrl = (path: string) => `http://${window.location.hostname}:${SERVER_PORT}${path}`;
+export const apiUrl = (path: string) => `${serverUrl()}${path}`;
 
 // The GitHub login when sign-in is on; otherwise ?name= from the URL.
 export function useUserName(): string {

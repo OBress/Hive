@@ -10,7 +10,11 @@ import { SERVER_PORT } from '@hive/shared/types';
 export interface ServerConfig { auth: boolean; supabaseUrl?: string; supabaseAnonKey?: string; epoch: string; repo: string | null }
 export interface AuthState { ready: boolean; auth: boolean; login: string | null; error?: string }
 
-const base = () => `http://${window.location.hostname}:${SERVER_PORT}`;
+// Where the server is: NEXT_PUBLIC_SERVER_URL when the app is hosted (set at build time, e.g. https://api.example.com);
+// otherwise port 4000 on the page's own host, so localhost and a LAN IP both work.
+export const serverUrl = () =>
+  (process.env.NEXT_PUBLIC_SERVER_URL ?? '').replace(/\/+$/, '') || `http://${window.location.hostname}:${SERVER_PORT}`;
+const base = serverUrl;
 
 // Loaded once per page: the epoch in it is the doc epoch this tab was built against.
 let config: Promise<ServerConfig> | null = null;
