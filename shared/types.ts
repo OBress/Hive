@@ -20,6 +20,14 @@ export interface Project {           // GET /api/projects; the registry lives on
   repo: string | null;               // GitHub owner/repo that Approve pushes to
   createdBy: string;
   createdAt: string;
+  sharedWith: string[];              // logins (GitHub when signed in) who can see and work on it besides createdBy
+  stack?: string;                    // approved stack / spec doc (Markdown); the planner and agents read it
+}
+
+export interface UserSummary {       // GET /api/users: people who have signed in to this Hive server
+  login: string;
+  name: string;
+  avatarUrl: string;
 }
 
 export interface Owner { kind: 'agent' | 'human'; name: string }   // agent: name 'agent'

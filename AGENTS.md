@@ -48,7 +48,7 @@ hive/
     smoke-seed.json       the URL shortener graph the smoke test starts from (HIVE_SEED)
     workspace-template/   starting files for each project's workspace
   web/                    Next.js client-only SPA on :5173 (owner: Owen)
-  data/                   runtime only, gitignored: projects.json, projects/<id>/{doc.bin, workspace/, worktrees/, sessions/}
+  data/                   runtime only, gitignored: projects.json, users.json, projects/<id>/{doc.bin, workspace/, worktrees/, sessions/}
 ```
 
 Target about 1,500 lines for all of `server/`. If a file grows past its job, simplify.
@@ -99,8 +99,10 @@ Supabase is used **only for sign-in** (GitHub OAuth); there are no Supabase tabl
 | Method and path | Body | Does |
 |---|---|---|
 | GET /api/health | | `{ok, projects, provider, models}` |
-| GET /api/projects | | `{projects}` |
-| POST /api/projects | `{name, goal, by, createRepo?}` | 201 the new project; also creates its private GitHub repo unless `createRepo: false` (`repoError` if that fails) |
+| GET /api/projects | | `{projects}`: only the caller's own and the ones shared with them |
+| POST /api/projects | `{name, goal, by, createRepo?, stack?}` | 201 the new project; also creates its private GitHub repo unless `createRepo: false` (`repoError` if that fails) |
+| POST /api/stack | `{name, goal, notes?}` | `{stack}`: an AI draft stack/spec doc to review before creating |
+| GET /api/users?q= | | `{users}`: people who have signed in, for sharing |
 | GET /api/config | | `{auth, supabaseUrl, supabaseAnonKey, epoch}` |
 | GET/POST /api/env | `{name, value}` | Which vars are set; write one (server machine only) |
 | GET /api/me | | `{user, githubConnected}` |
@@ -125,6 +127,9 @@ The rows below are per project: prefix them with `/api/projects/:project` (e.g. 
 | GET /api/history?taskId= | | Steps for a task |
 | POST /api/approve | `{by}` | Test main, push to GitHub |
 | POST /api/repo | `{repo}` | Set this project's push target (owner/repo) |
+| POST /api/share, /api/unshare | `{login, by}` | Add or remove a person (must have signed in once) |
+| POST /api/rename | `{name, by}` | Rename (anyone on the project) |
+| POST /api/delete | `{by}` | Owner only: stop agents, delete the project's data (its GitHub repo stays) |
 
 Errors are always `{error: "message"}` with a proper status code. Full examples are in `INTEGRATION.md`.
 

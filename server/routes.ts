@@ -6,11 +6,15 @@ import { withRepoLock } from './git.ts';
 import { createRepo, pushMain, remoteFor } from './github.ts';
 import { models, provider } from './llm.ts';
 import { history } from './mongo.ts';
-import { chat, summarize } from './planner.ts';
-import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, takeover } from './session.ts';
-import { createProject, current, getProject, inProject, listProjects, openProject, slugOf, updateProject, workspaceDir } from './projects.ts';
+import { chat, stackDoc, summarize } from './planner.ts';
+import { filesDir, getTask, handback, handoff, humanEdit, run, startTask, steer, stopProject, takeover } from './session.ts';
+import {
+  canSee, createProject, current, deleteProject, getProject, inProject, isOwner, listProjects, openProject, projectsFor, setShared, slugOf,
+  updateProject, workspaceDir,
+} from './projects.ts';
 import { runTests } from './runner.ts';
 import { pushRemote } from './settings.ts';
+import { findUser, rememberUser, searchUsers } from './users.ts';
 import { head, listFiles, readFile, safePath } from './workspace.ts';
 
 // Required string fields from the body (400 if missing).
@@ -26,6 +30,10 @@ function need(req: Request, ...fields: string[]): Record<string, string> {
 }
 const opt = (req: Request, f: string) => (typeof req.body?.[f] === 'string' ? (req.body[f] as string).trim() : '');
 const id = (req: Request) => String(req.params.id);
+// The person asking: the verified login with auth on, else ?name= (GETs) or the body's `by`.
+const who = (req: Request, res: Response): string =>
+  res.locals.user?.login || (typeof req.query.name === 'string' && req.query.name.trim()) || opt(req, 'by') || 'Guest';
+const MAX_STACK = 20000;
 
 // ---- /api: server-wide routes and the project list ----
 
@@ -35,14 +43,19 @@ api.get('/health', (_req, res) => {
   res.json({ ok: true, projects: listProjects().length, provider, models, auth: authEnabled() });
 });
 
-api.get('/projects', (_req, res) => {
-  res.json({ projects: listProjects() });
+// Only the projects this person created or that were shared with them.
+api.get('/projects', (req, res) => {
+  const me = who(req, res);
+  if (!authEnabled()) rememberUser({ login: me, name: me, avatarUrl: '' });
+  res.json({ projects: projectsFor(me) });
 });
 
 api.post('/projects', async (req, res) => {
   const { name } = need(req, 'name');
   if (name.length > 60) throw new HttpError(400, 'name must be at most 60 characters');
-  const p = await createProject(name, opt(req, 'goal').slice(0, 500), opt(req, 'by') || 'Guest');
+  const by = opt(req, 'by') || 'Guest';
+  if (!authEnabled()) rememberUser({ login: by, name: by, avatarUrl: '' });
+  const p = await createProject(name, opt(req, 'goal').slice(0, 500), by, opt(req, 'stack').slice(0, MAX_STACK) || undefined);
   await openProject(p);
   console.log(`Project ${p.id} created by ${p.createdBy}`);
   const repoError = req.body?.createRepo === false ? undefined : await giveRepo(p.id, res.locals.githubToken || process.env.GITHUB_TOKEN);
@@ -65,6 +78,18 @@ async function giveRepo(id: string, token: string | undefined): Promise<string |
     return (e as Error).message;
   }
 }
+
+// Draft a stack / spec doc for a project that doesn't exist yet; the person edits and approves it before creating.
+api.post('/stack', async (req, res) => {
+  const { name } = need(req, 'name');
+  res.json({ stack: await stackDoc(name.slice(0, 60), opt(req, 'goal').slice(0, 500), opt(req, 'notes').slice(0, 1000)) });
+});
+
+// People to share with: everyone who has signed in here, matched by login or name.
+api.get('/users', (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q : '';
+  res.json({ users: searchUsers(q, who(req, res)) });
+});
 
 api.get('/me', (_req, res) => {
   const user = res.locals.user ?? null;
@@ -99,6 +124,39 @@ routes.post('/repo', async (req, res) => {
     throw new HttpError(400, 'repo must be "owner/repo" or null');
   }
   res.json(await updateProject(current().id, { repo: repo?.trim() ?? null }));
+});
+
+// Share with / unshare from someone who has signed in here. Anyone on the project may share; the owner can't be removed.
+function shareRoute(on: boolean) {
+  return async (req: Request, res: Response) => {
+    const { by, login } = need(req, 'by', 'login');
+    const p = current();
+    if (!canSee(p, by)) throw new HttpError(403, 'Only people on this project can share it');
+    const user = findUser(login);
+    if (on && !user) throw new HttpError(404, `No Hive account for "${login}"; they need to sign in once first`);
+    if (isOwner(p, login)) throw new HttpError(400, `${p.createdBy} owns this project`);
+    res.json(await setShared(p.id, user?.login ?? login, on));
+  };
+}
+routes.post('/share', shareRoute(true));
+routes.post('/unshare', shareRoute(false));
+
+// Rename: anyone on the project. Delete: only its owner; stops its agents and removes its data (not its GitHub repo).
+routes.post('/rename', async (req, res) => {
+  const { by, name } = need(req, 'by', 'name');
+  if (name.length > 60) throw new HttpError(400, 'name must be at most 60 characters');
+  if (!canSee(current(), by)) throw new HttpError(403, 'Only people on this project can rename it');
+  res.json(await updateProject(current().id, { name }));
+});
+
+routes.post('/delete', async (req, res) => {
+  const { by } = need(req, 'by');
+  const p = current();
+  if (!isOwner(p, by)) throw new HttpError(403, `Only ${p.createdBy} can delete this project`);
+  stopProject();
+  await deleteProject(p.id);
+  console.log(`Project ${p.id} deleted by ${by}`);
+  res.json({ ok: true });
 });
 
 // Read each part through getMap/getArray: after a load from storage, `doc.share` only lists the parts touched so far.

@@ -10,7 +10,7 @@ import { readyTasks } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
 import { saveTranscript } from './mongo.ts';
 import { openCodeOn, search } from './opencode.ts';
-import { currentId, inProject, sessionsDir } from './projects.ts';
+import { current, currentId, inProject, sessionsDir } from './projects.ts';
 import { summarize } from './planner.ts';
 import { runTests } from './runner.ts';
 import {
@@ -62,6 +62,14 @@ function save(s: SessionData) {
   mkdirSync(sessionsDir(), { recursive: true });
   writeFileSync(join(sessionsDir(), `${s.id}.json`), JSON.stringify(s));
   saveTranscript(s);
+}
+
+// Deleting a project: stop its agent loops and forget its cached sessions.
+export function stopProject() {
+  const prefix = `${currentId()}/`;
+  for (const [k, c] of active) if (k.startsWith(prefix)) c.abort();
+  for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k);
+  autoRun.delete(currentId());
 }
 
 export function getTask(id: string): TaskSpec {
@@ -223,6 +231,7 @@ function contextFor(t: TaskSpec, s: SessionData, dir: string) {
     task: t, deps, files: listFiles(dir),
     lastTest: taskState().get(t.id)?.lastTest,
     summary: sessions().get(s.id)?.summary ?? '',
+    stack: current().stack,
   };
 }
 

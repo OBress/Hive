@@ -9,9 +9,10 @@ import { initModels } from './llm.ts';
 import { initMirror } from './mongo.ts';
 import { DATA_DIR } from './paths.ts';
 import {
-  createProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setOpener, setProjectDoc,
+  createProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setCloser, setOpener, setProjectDoc,
 } from './projects.ts';
 import { api, errorHandler } from './routes.ts';
+import { loadUsers } from './users.ts';
 import { disposeSandbox, warmSandbox } from './sandbox.ts';
 import { getEpoch, initEpoch, settings } from './settings.ts';
 import { preloadSessions, recover, watchTasks } from './session.ts';
@@ -28,7 +29,9 @@ function saveAll(): Promise<unknown> {
   dirty.clear();
   const docs = loadedDocs();
   saving = saving.then(() => Promise.all(ids.map(async (id) => {
-    const state = Y.encodeStateAsUpdate(docs.get(id)!);
+    const doc = docs.get(id);
+    if (!doc) return;   // deleted since it changed
+    const state = Y.encodeStateAsUpdate(doc);
     try {
       if (mongoOn()) await saveDocDb(id, state);
       else writeFileSync(docFile(id), state);
@@ -74,8 +77,10 @@ const server = new Server({
 });
 
 // A server-side connection keeps each project's doc loaded even with no browsers open; server code uses it via doc.ts.
+const directs = new Map<string, Awaited<ReturnType<typeof server.hocuspocus.openDirectConnection>>>();
 async function open(p: Project, seed?: TaskSpec[]) {
   const direct = await server.hocuspocus.openDirectConnection(p.id);
+  directs.set(p.id, direct);
   setProjectDoc(p.id, direct.document!);
   direct.document!.on('update', () => dirty.add(p.id));
   await inProject(p.id, async () => {
@@ -88,12 +93,21 @@ async function open(p: Project, seed?: TaskSpec[]) {
   });
 }
 setOpener((p) => open(p));
+// A deleted project: drop browsers on its doc, then our own connection, so Hocuspocus unloads it.
+setCloser(async (id) => {
+  dirty.delete(id);
+  await saving;   // a save already under way finishes before the project's files and rows go
+  server.hocuspocus.closeConnections(id);
+  await directs.get(id)?.disconnect().catch(() => {});
+  directs.delete(id);
+});
 
 mkdirSync(DATA_DIR, { recursive: true });
 await connectMongo();
 initMirror();
 await initEpoch(!registryExists());   // a fresh data/ (first run or `pnpm reset`) gets a new epoch
 const projects = await loadProjects();
+await loadUsers();
 initAuth();
 await initModels();
 await server.listen(PORT);

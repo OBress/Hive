@@ -3,7 +3,7 @@
 // With SMOKE_MONGODB_URI (a throwaway database: it is dropped first), the server stores everything in MongoDB, and the
 // run ends by restarting it on an empty data folder to check that projects, docs and transcripts come back.
 import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,8 +64,8 @@ const plansAfter = (s: State, stepId: string, sid: string) => {
   return s.steps.slice(i + 1).filter((x) => x.kind === 'plan' && x.sessionId === sid);
 };
 
-async function projects(): Promise<{ id: string; name: string }[]> {
-  return ((await (await fetch(`${root}/projects`)).json()) as { projects: { id: string; name: string }[] }).projects;
+async function projects(name = 'seed'): Promise<{ id: string; name: string }[]> {
+  return ((await (await fetch(`${root}/projects?name=${name}`)).json()) as { projects: { id: string; name: string }[] }).projects;
 }
 
 try {
@@ -85,7 +85,21 @@ try {
   const made = await fetch(`${root}/projects`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Second project', by: 'Ana' }) });
   const second = (await made.json()) as { id: string };
   const other = (await (await fetch(`${root}/projects/${second.id}/state`)).json()) as State;
-  check('a new project starts empty and separate', made.status === 201 && Object.keys(other.tasks).length === 0 && (await projects()).length === 2, second.id);
+  check('a new project starts empty and separate', made.status === 201 && Object.keys(other.tasks).length === 0 && (await projects('Ana')).length === 1, second.id);
+
+  // Each person sees only their own projects and the ones shared with them; sharing needs a known account.
+  const shareTo = (login: string) => fetch(`${root}/projects/${second.id}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ login, by: 'Ana' }) });
+  const unknown = await shareTo('nobody-here');
+  const shared = await shareTo('seed');
+  const users = (await (await fetch(`${root}/users?q=se&name=Ana`)).json()) as { users: { login: string }[] };
+  check('projects are private until shared', unknown.status === 404 && shared.status === 200 && (await projects()).length === 2 && users.users.some((u) => u.login === 'seed'));
+  const stack = await fetch(`${root}/stack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Chores', goal: 'Track house chores', by: 'Ana' }) });
+  check('POST /api/stack drafts a stack doc', stack.status === 200 && /# Stack and spec/.test(((await stack.json()) as { stack: string }).stack));
+  const post = (path: string, body: unknown) => fetch(`${root}/projects/${second.id}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const renamed = (await (await post('/rename', { name: 'Chores', by: 'seed' })).json()) as { name: string };
+  const refused = await post('/delete', { by: 'seed' });
+  const deleted = await post('/delete', { by: 'Ana' });
+  check('rename by a member; delete only by the owner', renamed.name === 'Chores' && refused.status === 403 && deleted.status === 200 && (await projects('Ana')).length === 0 && !existsSync(join(DATA_DIR, 'projects', second.id)));
 
   const run = await call('POST', '/run', { by: 'Ana' });
   check('POST /api/run starts store', run.status === 202 && run.json.started?.includes('store'), JSON.stringify(run.json));

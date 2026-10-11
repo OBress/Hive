@@ -1,5 +1,5 @@
 import { Binary, MongoClient, type Db } from 'mongodb';
-import type { Project } from '@hive/shared/types';
+import type { Project, UserSummary } from '@hive/shared/types';
 
 // Durable storage for the hosted server. With MONGODB_URI set, MongoDB holds the project list, every project's
 // Y.Doc, agent transcripts and the doc epoch, so a redeploy loses nothing but the git folders (keep those on a
@@ -8,6 +8,7 @@ import type { Project } from '@hive/shared/types';
 //   docs      {_id: project id, state: Binary (Y.encodeStateAsUpdate), at}
 //   sessions  {_id: "<project>/<session id>", project, data: SessionData}
 //   meta      {_id: 'epoch', value}
+//   users     UserSummary, _id = lowercased login (people who signed in, for sharing)
 //   steps, chat  history mirror tagged with `project` (see mongo.ts)
 
 let db: Db | null = null;
@@ -42,6 +43,27 @@ export async function loadProjectsDb(): Promise<Project[]> {
 
 export async function saveProjectDb(p: Project): Promise<void> {
   await db!.collection<{ _id: string }>('projects').replaceOne({ _id: p.id }, { ...p, _id: p.id }, { upsert: true });
+}
+
+// A deleted project: its row, doc, transcripts and history.
+export async function deleteProjectDb(id: string): Promise<void> {
+  await Promise.all([
+    db!.collection<{ _id: string }>('projects').deleteOne({ _id: id }),
+    db!.collection<{ _id: string }>('docs').deleteOne({ _id: id }),
+    db!.collection('sessions').deleteMany({ project: id }),
+    db!.collection('steps').deleteMany({ project: id }),
+    db!.collection('chat').deleteMany({ project: id }),
+  ]);
+}
+
+// ---- people who have signed in (for sharing) ----
+
+export async function loadUsersDb(): Promise<UserSummary[]> {
+  const rows = await db!.collection<UserSummary & { _id: string }>('users').find().toArray();
+  return rows.map(({ _id, ...u }) => u as UserSummary);
+}
+export async function saveUserDb(u: UserSummary): Promise<void> {
+  await db!.collection<{ _id: string }>('users').replaceOne({ _id: u.login.toLowerCase() }, { ...u, _id: u.login.toLowerCase() }, { upsert: true });
 }
 
 // ---- docs ----
