@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type * as Y from 'yjs';
 import type { Project } from '@hive/shared/types';
 import { DATA_DIR } from './paths.ts';
-import { deleteProjectDb, loadProjectsDb, mongoOn, saveProjectDb } from './store.ts';
+import { deleteProjectDb, loadProjectsDb, storageOn, saveProjectDb } from './store.ts';
 
 // Every project has its own Y.Doc (named by its id), git workspace, worktrees and session transcripts under
 // data/projects/<id>/. Server code runs "inside" one project: requests under /api/projects/:project and each
@@ -15,15 +15,15 @@ const FILE = join(DATA_DIR, 'projects.json');
 const DIR = join(DATA_DIR, 'projects');
 export const registryExists = () => existsSync(FILE);
 
-// The list lives in data/projects.json, or in MongoDB when it is the store (see store.ts).
+// The list lives in data/projects.json, or in Supabase when it is the store (see store.ts).
 let list: Project[] = [];
 export async function loadProjects(): Promise<Project[]> {
-  list = mongoOn() ? await loadProjectsDb() : existsSync(FILE) ? (JSON.parse(readFileSync(FILE, 'utf8')) as Project[]) : [];
+  list = storageOn() ? await loadProjectsDb() : existsSync(FILE) ? (JSON.parse(readFileSync(FILE, 'utf8')) as Project[]) : [];
   for (const p of list) p.sharedWith ??= [];   // stored before sharing existed
   return list;
 }
 async function save(p: Project) {
-  if (mongoOn()) return saveProjectDb(p);
+  if (storageOn()) return saveProjectDb(p);
   mkdirSync(DATA_DIR, { recursive: true });
   writeFileSync(FILE, JSON.stringify(list, null, 2));
 }
@@ -69,7 +69,7 @@ export async function deleteProject(id: string) {
   list = list.filter((p) => p.id !== id);
   docs.delete(id);   // first, so the 2 s saver stops writing the doc
   await closer(id);
-  if (mongoOn()) await deleteProjectDb(id);
+  if (storageOn()) await deleteProjectDb(id);
   else writeFileSync(FILE, JSON.stringify(list, null, 2));
   rmSync(join(DIR, id), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

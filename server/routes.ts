@@ -7,7 +7,7 @@ import { githubTokens, authEnabled } from './auth.ts';
 import { withRepoLock } from './git.ts';
 import { createRepo, pushMain, remoteFor } from './github.ts';
 import { models, provider } from './llm.ts';
-import { history } from './mongo.ts';
+import { history } from './history.ts';
 import { chat, setMode, stackDoc, summarize } from './planner.ts';
 import { livePreview, stopPreviews } from './preview.ts';
 import { filesDir, getTask, handback, handoff, humanEdit, run, startCli, startTask, steer, stopProject, takeover } from './session.ts';

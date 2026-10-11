@@ -9,7 +9,7 @@ import {
 import { AGENT, personAuthor, type GitUser } from './git.ts';
 import { autoStartable, readyTasks, waitingForOk } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
-import { saveTranscript } from './mongo.ts';
+import { saveTranscript } from './history.ts';
 import { openCodeOn, search } from './opencode.ts';
 import { current, currentId, inProject, sessionsDir, workspaceDir } from './projects.ts';
 import { summarize } from './planner.ts';
@@ -57,7 +57,7 @@ function load(id: string | undefined): SessionData | null {
   return s;
 }
 
-// With MongoDB, a project's transcripts are loaded into the cache when it opens (a fresh container has no files).
+// With Supabase, a project's transcripts are loaded into the cache when it opens (a fresh container has no files).
 export function preloadSessions(rows: { id: string; data: unknown }[]) {
   for (const r of rows) if (!cache.has(key(r.id))) cache.set(key(r.id), r.data as SessionData);
 }
