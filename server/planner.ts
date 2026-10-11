@@ -10,7 +10,12 @@ Reply with exactly four short labeled lines and nothing else:
 Done: ...
 Left: ...
 Tried and failed: ...
-Open questions: ...`;
+Open questions: ...
+
+Facts come only from steps that record what happened: edit, human-edit, test (with its counts), read, merge, finish, error, steer, takeover, handback, handoff. "plan" steps are only the agent's intentions; never report a planned file, test or problem as real unless a later step shows it. If a plan says "my tests aren't running" but no step shows why, say what the steps show instead.`;
+
+// Plan steps are what an agent meant to do, so label them for the models that read step logs.
+const kind = (s: Step) => (s.kind === 'plan' ? 'plan (intention)' : s.kind);
 
 // Done / Left / Tried and failed / Open questions over the task's last 60 steps; saved on its session.
 export async function summarize(taskId: string): Promise<{ summary: string; stepIds: string[] }> {
@@ -19,7 +24,7 @@ export async function summarize(taskId: string): Promise<{ summary: string; step
   const recent = (await history(taskId)).steps.slice(-60);
   const sid = taskState().get(taskId)?.sessionId;
   if (!recent.length) return { summary: sessions().get(sid ?? '')?.summary || 'Done: nothing yet.\nLeft: everything.\nTried and failed: nothing.\nOpen questions: none.', stepIds: [] };
-  const log = recent.map((s) => `[${s.id}] ${s.kind} by ${s.by}: ${s.text}${s.path ? ` (${s.path})` : ''}`).join('\n');
+  const log = recent.map((s) => `[${s.id}] ${kind(s)} by ${s.by}: ${s.text}${s.path ? ` (${s.path})` : ''}`).join('\n');
   const text = await generate({
     model: models.planner, system: SUMMARY_SYSTEM, maxTokens: 600,
     messages: [{ role: 'user', content: `Task ${t.id} "${t.title}": ${t.spec}\n\nSteps:\n${log}` }],
@@ -40,7 +45,12 @@ Reply with strict JSON only, no prose around it:
   {"op":"removeTask","id":"..."}
   {"op":"addDep","from":"a","to":"b"}   (b depends on a)
   {"op":"removeDep","from":"a","to":"b"}
-- "cites": for questions about what happened, the ids of the steps your answer is based on (like "st_12"). Answer only from the steps shown.`;
+- "cites": for questions about what happened, the ids of the steps your answer is based on (like "st_12").
+
+Answering "what happened":
+- State only facts the steps show: files written (edit, human-edit), test runs and their counts (test), merges, finishes, errors, and what people did (steer, takeover, handback, handoff).
+- Lines marked "plan" are the agent's intentions and guesses, not facts. Do not repeat a plan's claim (a missing file, a test not being picked up, a bug) as true unless another step confirms it; at most say "the agent thought ...".
+- Cite the step ids behind each fact. If the steps do not show something, say you do not know.`;
 
 // Pull the JSON object out of a model reply: drop <think> blocks and code fences, take the first { to the last }.
 export function extractJson(text: string): { reply?: unknown; ops?: unknown; cites?: unknown } | null {
@@ -56,7 +66,7 @@ export function extractJson(text: string): { reply?: unknown; ops?: unknown; cit
   }
 }
 
-const line = (s: Step) => `[${s.id}] ${s.taskId ?? '-'} ${s.kind} by ${s.by}: ${s.text}${s.path ? ` (${s.path})` : ''}${s.test ? ` [${s.test.passed} passed, ${s.test.failed} failed]` : ''}`;
+const line = (s: Step) => `[${s.id}] ${s.taskId ?? '-'} ${kind(s)} by ${s.by}: ${s.text}${s.path ? ` (${s.path})` : ''}${s.test ? ` [${s.test.passed} passed, ${s.test.failed} failed]` : ''}`;
 
 export async function chat(from: string, text: string) {
   try {

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Owner, TaskSpec, TaskState } from '@hive/shared/types';
-import { AGENT_SYSTEM, buildMessages, contextText, parseAction, type Action } from './agent.ts';
+import { AGENT_SYSTEM, buildMessages, contextText, isTestFile, parseAction, type Action } from './agent.ts';
 import {
   addStep, HttpError, live, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks, trim,
 } from './doc.ts';
@@ -217,10 +217,13 @@ function contextFor(t: TaskSpec, s: SessionData, dir: string) {
   };
 }
 
+// Ground truth after each action, so the agent never relies on files it only planned to write.
+const filesNow = (dir: string) => `Files in the workspace now: ${listFiles(dir).join(', ') || 'none'}.`;
+
 async function act(s: SessionData, t: TaskSpec, dir: string, a: Action) {
   if (a.type === 'read') {
     const content = readFile(dir, a.path);
-    s.pending.push(content === null ? `${a.path} does not exist.` : `Contents of ${a.path}:\n${trim(content, 12000)}`);
+    s.pending.push(content === null ? `${a.path} does not exist. ${filesNow(dir)}` : `Contents of ${a.path}:\n${trim(content, 12000)}`);
     addStep({ ...ref(s), kind: 'read', text: `Read ${a.path}`, path: a.path });
   } else if (a.type === 'write') {
     writeFile(dir, a.path, a.content);
@@ -228,13 +231,14 @@ async function act(s: SessionData, t: TaskSpec, dir: string, a: Action) {
     const d = commit ? await diff(dir, 'HEAD~1', 'HEAD', a.path) : '';
     addStep({ ...ref(s), kind: 'edit', text: `Wrote ${a.path}`, path: a.path, diff: d, commit: commit ?? undefined });
     s.testOk = false;
-    s.pending.push(commit ? `Wrote ${a.path} (commit ${commit}).` : `${a.path} is unchanged.`);
+    s.pending.push(`${commit ? `Wrote ${a.path} (commit ${commit}).` : `${a.path} is unchanged.`} ${filesNow(dir)}`);
   } else if (a.type === 'test') {
     const r = await runTests(dir);
     addStep({ ...ref(s), kind: 'test', text: `Tests: ${r.passed} passed, ${r.failed} failed`, test: r });
     setTaskState(t.id, { lastTest: { passed: r.passed, failed: r.failed } });
     s.testOk = r.failed === 0 && r.passed > 0;
-    s.pending.push(`Test results: ${r.passed} passed, ${r.failed} failed.\n${r.output.slice(-2000)}`);
+    const ran = listFiles(dir).filter(isTestFile);
+    s.pending.push(`Test results: ${r.passed} passed, ${r.failed} failed. Test files that ran: ${ran.join(', ') || 'none'}.\n${r.output.slice(-2000)}`);
   } else if (!s.testOk) {
     s.pending.push('Run <test/> and make all tests pass before finishing.');
   } else {

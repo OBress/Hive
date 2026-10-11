@@ -13,6 +13,18 @@ test('takes the earliest action', () => {
   expect(parseAction('PLAN: x\n<finish>All good.</finish>').action).toEqual({ type: 'finish', summary: 'All good.' });
 });
 
+test('accepts a bold or lowercase PLAN line', () => {
+  expect(parseAction('**PLAN:** write it**\n<test/>').plan).toBe('write it');
+  expect(parseAction('Plan: run tests\n<test/>').plan).toBe('run tests');
+  expect(parseAction('Got it: adding createdAt.\n\n<test/>').plan).toBe('Got it: adding createdAt.');
+  expect(parseAction('<test/>').plan).toBe('');
+});
+
+test('package.json is readable but not writable', () => {
+  expect(parseAction('PLAN: x\n<read path="package.json"/>').action).toEqual({ type: 'read', path: 'package.json' });
+  expect(parseAction('PLAN: x\n<write path="package.json">{}</write>').error).toMatch(/read-only/);
+});
+
 test('rejects unsafe paths and missing actions', () => {
   expect(parseAction('PLAN: x\n<write path="../etc/passwd">x</write>').error).toMatch(/not allowed/);
   expect(parseAction('PLAN: just thinking').action).toBeUndefined();

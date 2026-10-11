@@ -12,3 +12,11 @@ test('safePath rejects escapes, absolute paths and other folders', () => {
     expect(safePath(p)).toBeNull();
   }
 });
+
+test('safePath allows reading package.json and README.md, never writing them', () => {
+  expect(safePath('package.json', true)).toBe('package.json');
+  expect(safePath('./README.md', true)).toBe('README.md');
+  expect(safePath('src/a.js', true)).toBe('src/a.js');
+  for (const p of ['package.json', 'README.md']) expect(safePath(p)).toBeNull();
+  for (const p of ['.env', '.git/config', '../package.json', 'src/../.env', 'node_modules/x/package.json']) expect(safePath(p, true)).toBeNull();
+});

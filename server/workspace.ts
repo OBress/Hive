@@ -30,12 +30,16 @@ export function ensureWorktree(taskId: string): Promise<string> {
   });
 }
 
-// A relative path under src/ or test/, normalized with forward slashes; null if unsafe.
-export function safePath(rel: unknown): string | null {
+// Agents may also read these, but never write them.
+const READ_ONLY = ['package.json', 'README.md'];
+
+// A relative path under src/ or test/ (or a READ_ONLY file when `read`), normalized with forward slashes; null if unsafe.
+export function safePath(rel: unknown, read = false): string | null {
   if (typeof rel !== 'string' || !rel.trim()) return null;
   const p = rel.trim().replace(/\\/g, '/');
   if (p.startsWith('/') || /^[a-zA-Z]:/.test(p) || p.split('/').includes('..')) return null;
   const n = posix.normalize(p);
+  if (read && READ_ONLY.includes(n)) return n;
   if (!/^(src|test)\/[^/]/.test(n) || n.endsWith('/')) return null;
   return n;
 }
