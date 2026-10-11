@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Server } from '@hocuspocus/server';
 import * as Y from 'yjs';
-import { DOC_NAME, MAPS, SERVER_PORT, type Section } from '@hive/shared/types';
+import { DOC_NAME, MAPS, SERVER_PORT, type TaskSpec } from '@hive/shared/types';
 import seed from '@hive/shared/seed.json' with { type: 'json' };
 
 const DATA_DIR = fileURLToPath(new URL('../data/', import.meta.url));
@@ -17,9 +17,9 @@ function loadInto(doc: Y.Doc) {
     console.log('Loaded data/doc.bin');
     return;
   }
-  const sections = doc.getMap<Section>(MAPS.sections);
+  const tasks = doc.getMap<TaskSpec>(MAPS.tasks);
   doc.transact(() => {
-    for (const s of seed.sections as Section[]) sections.set(s.id, s);
+    for (const t of seed.tasks as TaskSpec[]) tasks.set(t.id, t);
   });
   console.log('Loaded shared/seed.json');
 }
@@ -34,7 +34,7 @@ app.use((req, res, next) => {
 });
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, sections: getDoc().getMap(MAPS.sections).size });
+  res.json({ ok: true, tasks: getDoc().getMap(MAPS.tasks).size });
 });
 
 const server = new Server({

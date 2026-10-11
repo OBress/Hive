@@ -1,40 +1,12 @@
 {
-  "sections": [
-    {
-      "id": "nav", "type": "nav", "order": 0,
-      "headline": "Hive", "subtext": "", "ctaText": "Get started",
-      "items": ["Product", "Pricing", "About"],
-      "bg": "#ffffff", "fg": "#111827", "ctaBg": "#111827", "ctaFg": "#ffffff",
-      "animation": "none",
-      "requirement": "Simple top bar with the logo, three links and a sign-up button."
-    },
-    {
-      "id": "hero", "type": "hero", "order": 1,
-      "headline": "Build together, ship faster",
-      "subtext": "One live workspace for designers, developers and AI agents.",
-      "ctaText": "Start free",
-      "items": [],
-      "bg": "#1e1b4b", "fg": "#ffffff", "ctaBg": "#facc15", "ctaFg": "#111827",
-      "animation": "gradient",
-      "requirement": "Full-width hero with an animated gradient background that draws the eye, a big headline and one clear call to action."
-    },
-    {
-      "id": "features", "type": "features", "order": 2,
-      "headline": "Everything in one place",
-      "subtext": "Stop re-explaining context.",
-      "ctaText": "",
-      "items": ["Live collaboration", "Agents that notice changes", "Decisions you can trace"],
-      "bg": "#f9fafb", "fg": "#111827", "ctaBg": "#111827", "ctaFg": "#ffffff",
-      "animation": "none",
-      "requirement": "A row of feature cards, one per item."
-    },
-    {
-      "id": "footer", "type": "footer", "order": 3,
-      "headline": "Hive", "subtext": "© 2026 Hive. Built at the hackathon.", "ctaText": "",
-      "items": ["Privacy", "Terms", "Contact"],
-      "bg": "#111827", "fg": "#d1d5db", "ctaBg": "#ffffff", "ctaFg": "#111827",
-      "animation": "none",
-      "requirement": "Small dark footer with copyright and links."
-    }
+  "tasks": [
+    { "id": "store", "title": "Link store", "deps": [], "x": 0, "y": 120, "createdBy": "seed",
+      "spec": "src/store.js: createLink(url) returns { code, url } with a 6-character base62 code and throws on invalid URLs (only http and https). getLink(code) returns the link or null. recordVisit(code, { ip, at }) stores a visit. getVisits(code) returns the visits for a code. Keep everything in memory." },
+    { "id": "redirect", "title": "Redirect", "deps": ["store"], "x": 280, "y": 40, "createdBy": "seed",
+      "spec": "src/redirect.js: resolve(code, ip) returns the target URL and records a visit with the ip and the current time, or returns null for an unknown code. Use the store from src/store.js." },
+    { "id": "stats", "title": "Stats", "deps": ["redirect"], "x": 560, "y": 40, "createdBy": "seed",
+      "spec": "src/stats.js: stats(code) returns { hits, lastVisit } for a code, where hits is the number of visits and lastVisit is the time of the latest visit or null. Use getVisits from src/store.js." },
+    { "id": "api", "title": "HTTP API", "deps": ["store", "redirect", "stats"], "x": 840, "y": 120, "createdBy": "seed",
+      "spec": "src/server.js: createServer() returns a node:http server. POST /links with JSON { url } returns 201 { code }. GET /:code redirects with 302 to the URL, or 404. GET /links/:code/stats returns 200 with the stats JSON, or 404. Tests start the server on port 0." }
   ]
 }
