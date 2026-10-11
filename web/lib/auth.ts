@@ -1,0 +1,83 @@
+'use client';
+
+// Server config + Supabase GitHub sign-in. The server says whether auth is on and hands out the
+// (public) Supabase URL and anon key, so the only place to configure anything is the server's .env.
+
+import { useSyncExternalStore } from 'react';
+import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
+import { SERVER_PORT } from '@hive/shared/types';
+
+export interface ServerConfig { auth: boolean; supabaseUrl?: string; supabaseAnonKey?: string; epoch: string; repo: string | null }
+export interface AuthState { ready: boolean; auth: boolean; login: string | null; error?: string }
+
+const base = () => `http://${window.location.hostname}:${SERVER_PORT}`;
+
+// Loaded once per page: the epoch in it is the doc epoch this tab was built against.
+let config: Promise<ServerConfig> | null = null;
+export function loadConfig(): Promise<ServerConfig> {
+  config ??= fetch(`${base()}/api/config`).then((r) => r.json() as Promise<ServerConfig>);
+  config.catch(() => { config = null; });   // server not up yet: try again on the next call
+  return config;
+}
+
+let supabase: SupabaseClient | null = null;
+let session: Session | null = null;
+let state: AuthState = { ready: false, auth: false, login: null };
+const listeners = new Set<() => void>();
+const set = (patch: Partial<AuthState>) => { state = { ...state, ...patch }; listeners.forEach((l) => l()); };
+
+const loginOf = (s: Session | null) => {
+  const m = s?.user.user_metadata ?? {};
+  return s ? String(m.user_name ?? m.preferred_username ?? s.user.email?.split('@')[0] ?? s.user.id) : null;
+};
+
+// Keep the person's GitHub token on the server (memory only) so Approve can push as them.
+function sendProviderToken(s: Session | null) {
+  if (!s?.provider_token) return;
+  fetch(`${base()}/api/github/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s.access_token}` },
+    body: JSON.stringify({ providerToken: s.provider_token }),
+  }).catch(() => {});
+}
+
+let started: Promise<void> | null = null;
+export function initAuth(): Promise<void> {
+  started ??= (async () => {
+    try {
+      const c = await loadConfig();
+      if (!c.auth || !c.supabaseUrl || !c.supabaseAnonKey) return set({ ready: true, auth: false });
+      supabase = createClient(c.supabaseUrl, c.supabaseAnonKey);
+      session = (await supabase.auth.getSession()).data.session;
+      sendProviderToken(session);
+      supabase.auth.onAuthStateChange((event, s) => {
+        session = s;
+        if (event === 'SIGNED_IN') sendProviderToken(s);
+        set({ login: loginOf(s) });
+      });
+      set({ ready: true, auth: true, login: loginOf(session) });
+    } catch {
+      started = null;
+      set({ ready: true, auth: false, error: 'Could not reach the Hive server' });
+    }
+  })();
+  return started;
+}
+
+export function useAuth(): AuthState {
+  return useSyncExternalStore(
+    (l) => { void initAuth(); listeners.add(l); return () => { listeners.delete(l); }; },
+    () => state,
+    () => state,
+  );
+}
+
+export const accessToken = () => session?.access_token ?? '';
+export const authHeaders = (): Record<string, string> => (session ? { Authorization: `Bearer ${session.access_token}` } : {});
+
+export function signIn() {
+  void supabase?.auth.signInWithOAuth({ provider: 'github', options: { scopes: 'repo', redirectTo: window.location.href } });
+}
+export function signOut() {
+  void supabase?.auth.signOut().then(() => window.location.reload());
+}

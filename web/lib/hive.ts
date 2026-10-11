@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import { DOC_NAME, SERVER_PORT } from '@hive/shared/types';
+import { accessToken, initAuth, loadConfig, useAuth } from './auth';
 
 // One provider per browser tab. The server host follows the page host so a LAN IP works too.
 let provider: HocuspocusProvider | null = null;
@@ -12,6 +13,14 @@ export function getProvider(): HocuspocusProvider {
     provider = new HocuspocusProvider({
       url: `ws://${window.location.hostname}:${SERVER_PORT}`,
       name: DOC_NAME,
+      // The doc epoch this page loaded with, plus the Supabase access token when sign-in is on.
+      token: async () => {
+        const { epoch } = await loadConfig();
+        await initAuth();
+        return JSON.stringify({ epoch, access: accessToken() });
+      },
+      // The server was reset since this page loaded: reload instead of merging an old doc into the new one.
+      onAuthenticationFailed: ({ reason }) => { if (reason === 'stale-epoch') window.location.reload(); },
     });
   }
   return provider;
@@ -19,12 +28,14 @@ export function getProvider(): HocuspocusProvider {
 
 export const apiUrl = (path: string) => `http://${window.location.hostname}:${SERVER_PORT}${path}`;
 
+// The GitHub login when sign-in is on; otherwise ?name= from the URL.
 export function useUserName(): string {
   const [name, setName] = useState('Guest');
+  const auth = useAuth();
   useEffect(() => {
     setName(new URLSearchParams(window.location.search).get('name') ?? 'Guest');
   }, []);
-  return name;
+  return auth.auth ? auth.login ?? 'Guest' : name;
 }
 
 // Re-render whenever a top-level Y.Map changes; returns its current plain-object snapshot.
