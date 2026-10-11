@@ -50,9 +50,9 @@ When auth is on (see below), `by`/`from` in bodies are ignored and replaced by t
 | GET /api/tasks/:id/summary | | `{summary, stepIds}` (regenerated) |
 | POST /api/chat | `{from, text}` | 202 `{id}`; Planner reply appears in `chat` (may also edit `tasks`) |
 | GET /api/history?taskId=stats | | `{steps: Step[], source: "mongo" \| "doc"}` |
-| POST /api/approve | `{by}` | `{ok: true, commit, pushed, url}`; 409 `{ok: false, error, output}` if tests fail |
-| GET /api/me | | `{user: HiveUser \| null, githubConnected}` |
-| POST /api/github/token | `{providerToken}` | `{ok: true}`; kept in server memory only |
+| POST /api/approve | `{by}` | `{ok: true, commit, pushed, url, pushError?}`; 409 `{ok: false, error, output}` if tests fail on main |
+| GET /api/me | | `{user: HiveUser \| null, githubConnected}` (`user` is null when auth is off) |
+| POST /api/github/token | `{providerToken}` | `{ok: true}`; kept in server memory only (400 when auth is off) |
 
 Examples:
 
@@ -84,6 +84,9 @@ When it's on:
 6. `GET /api/me` → `{user: {id, login, name, avatarUrl, githubId}, githubConnected}`. Use `user.login` as the display name; steps, chat and owners use it.
 
 ## How the frontend should use this
+
+- To build the UI with no API key, run the server with `LLM_PROVIDER=fake` in `.env`: scripted agents stream, test, merge and answer chat.
+- Ids: steps are `st_<n>` (`n` is the global order), sessions `s_<taskId>_<suffix>`, chat `c_...`.
 
 - Read everything from the doc (`useYMap('tasks')`, `taskState`, `sessions`, `live`, and the `steps`/`chat` arrays). There is no other state to fetch.
 - Write only `tasks` (graph editing, positions, spec edits with `editedBy` + `why`).

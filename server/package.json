@@ -6,7 +6,8 @@
     "dev": "tsx watch --env-file-if-exists=../.env index.ts",
     "start": "tsx --env-file-if-exists=../.env index.ts",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
