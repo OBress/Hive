@@ -1,8 +1,9 @@
 import type { Msg, ToolCall, ToolDef } from './llm.ts';
+import { allowText, checkPackages, packagesOn } from './packages.ts';
 import { splitArgs } from './runner.ts';
 import { safePath } from './workspace.ts';
 
-export const AGENT_SYSTEM = `You are a coding agent working on one task in a shared team workspace. Your teammates watch every step live and may message you while you work.
+const BASE_SYSTEM = `You are a coding agent working on one task in a shared team workspace. Your teammates watch every step live and may message you while you work.
 
 How you work:
 - You act through tools. Start every reply with one short sentence (under 25 words) saying what you are doing now and why, then make your tool calls. Results arrive in the next message.
@@ -12,7 +13,7 @@ How you work:
 
 The workspace:
 - Other tasks run at the same time on their own branches and merge into main when they finish. Change only the files your task needs; don't rewrite files that belong to other tasks.
-- You may write only under src/ and test/. You may also read package.json and README.md. ES modules ("type": "module"), Node built-ins only, no dependencies.
+- You may write only under src/ and test/. You may also read package.json and README.md. ES modules ("type": "module").
 - run_tests runs node --test on every .js file under test/; pass files to run only some of them while you iterate.
 - If the project is something people open (a website, an API with pages, a game), the app starts with "node src/server.js" and listens on process.env.PORT, or it is a static src/index.html. Hive opens it that way to take screenshots. Export the server's start function so tests can import it without it listening on import. A static page loads its scripts and styles with relative paths (app.js, not /app.js).
 - If the project is a command-line tool, it starts with "node src/cli.js <args>": it reads process.argv.slice(2), prints to stdout and exits, and never waits for input. Keep its logic in other src/ files so tests import those. run_cli runs it (15 s at most) and shows you and your teammates what it prints; try it once tests pass.
@@ -22,6 +23,24 @@ How to do the task:
 - If tests fail, read the failure output, fix the code or the test, and run them again. Call finish only after a full run_tests (no files filter) where your task's tests ran and every test passed.
 - When a teammate's message appears, your next reply's first sentence starts with "Got it:" and says what you are changing, like "Got it: counting unique visitors; rewriting src/stats.js." Do this once per message, not on every later reply.
 - Never print secrets.`;
+
+const PACKAGES_HELP = () => `
+
+Packages:
+- Prefer Node built-ins. When a package clearly does the job better (a 3D engine, a physics library, a parser), add it with install_packages; allowed here: ${allowText()}. It goes into package.json and node_modules; tests and src/server.js import it by name.
+- A static src/index.html cannot reach node_modules. Either serve the files from src/server.js, or load browser libraries from a CDN with an import map, e.g. <script type="importmap">{"imports":{"three":"https://esm.sh/three@0.170.0"}}</script>, keeping the same version as package.json.`;
+
+const SCREENSHOT_HELP = `
+
+Looking at the app:
+- For anything people open in a browser, call screenshot after the tests pass: it opens src/server.js (or src/index.html) in a real browser and returns the browser console output (uncaught errors included)${'${VISION}'}. Fix what it shows before finishing. Teammates see the screenshot too.`;
+
+// The system prompt for the tools this server offers (fixed for the life of the process, so it caches).
+export function agentSystem(tools: ToolDef[], vision: boolean): string {
+  const has = (n: string) => tools.some((t) => t.name === n);
+  return BASE_SYSTEM + (has('install_packages') ? PACKAGES_HELP() : '')
+    + (has('screenshot') ? SCREENSHOT_HELP.replace('${VISION}', vision ? ' and the picture' : '') : '');
+}
 
 const str = (description: string) => ({ type: 'string', description });
 export const TOOLS: ToolDef[] = [
@@ -59,6 +78,22 @@ export const TOOLS: ToolDef[] = [
   },
 ];
 
+const EXTRA_TOOLS: ToolDef[] = [
+  {
+    name: 'install_packages', description: 'Install npm packages into this project (saved to package.json; install scripts never run). Only packages on this server list are allowed.',
+    schema: { type: 'object', properties: { packages: { type: 'array', items: { type: 'string' }, description: 'e.g. ["three@0.170.0"]' } }, required: ['packages'] },
+  },
+  {
+    name: 'screenshot', description: 'Open the app (src/server.js, else src/index.html) in a headless browser: returns its console output and a screenshot.',
+    schema: { type: 'object', properties: { page: str('URL path to open, default "/" (for a static site, a file under src/ like "game.html")') }, required: [] },
+  },
+];
+
+// The tools agents get on this server: installing packages unless NPM_ALLOW=off, screenshots when a browser is here.
+export function agentTools(screenshots: boolean): ToolDef[] {
+  return [...TOOLS, ...EXTRA_TOOLS.filter((t) => (t.name === 'install_packages' ? packagesOn() : screenshots))];
+}
+
 export type Action =
   | { type: 'read'; path: string; start?: number; end?: number }
   | { type: 'search'; pattern: string }
@@ -66,6 +101,8 @@ export type Action =
   | { type: 'edit'; path: string; old: string; new: string; all: boolean }
   | { type: 'test'; files?: string[] }
   | { type: 'run'; args: string[] }
+  | { type: 'install'; packages: string[] }
+  | { type: 'screenshot'; page: string }
   | { type: 'finish'; summary: string };
 
 // Check a tool call's input and turn it into an action, or say what is wrong so the model can fix it.
@@ -92,6 +129,12 @@ export function toAction(c: ToolCall): { action?: Action; error?: string } {
       }
       case 'run_cli': return { action: { type: 'run', args: splitArgs(s('args') ?? '') } };
       case 'finish': return { action: { type: 'finish', summary: need('summary').trim() } };
+      case 'install_packages': {
+        const packages = Array.isArray(i.packages) ? i.packages.filter((p): p is string => typeof p === 'string') : [];
+        const why = checkPackages(packages);
+        return why ? { error: why } : { action: { type: 'install', packages } };
+      }
+      case 'screenshot': return { action: { type: 'screenshot', page: s('page') || '/' } };
       default: return { error: `there is no tool named "${c.name}"` };
     }
   } catch (e) {

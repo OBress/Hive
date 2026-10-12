@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { ensureDeps } from './packages.ts';
 import { sandboxExec, sandboxOn } from './sandbox.ts';
 
 export interface TestResult { passed: number; failed: number; output: string; failures?: string; sandbox?: boolean }
@@ -53,6 +54,7 @@ export async function runTests(dir: string, onOutput?: (chunk: string) => void, 
       console.error(`Sandbox unavailable, running tests on this machine: ${(e as Error).message}`);
     }
   }
+  await ensureDeps(dir);
   const r = await runNode(dir, ['--test', '--test-reporter=tap', ...files], TEST_TIMEOUT_S * 1000, onOutput);
   let { passed, failed } = parseTap(r.stdout);
   const summary = /^# pass \d+/m.test(r.stdout);
@@ -72,6 +74,7 @@ export async function runCli(dir: string, args: string[], onOutput?: (chunk: str
       console.error(`Sandbox unavailable, running the CLI on this machine: ${(e as Error).message}`);
     }
   }
+  await ensureDeps(dir);
   const r = await runNode(dir, ['src/cli.js', ...args], 15000, onOutput);
   if (r.killed) onOutput?.('\n(stopped after 15 s)\n');
   return { exitCode: r.killed ? 124 : r.code ?? 1, output: r.all.slice(-3000) };

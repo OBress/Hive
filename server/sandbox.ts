@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { DATA_DIR } from './paths.ts';
 import { listFiles } from './workspace.ts';
@@ -100,7 +100,8 @@ async function sync(b: Box, dir: string): Promise<string> {
   const remote = `${b.root}/${name}`;
   const have = b.synced.get(name) ?? new Map<string, string>();
   b.synced.set(name, have);
-  const files = ['package.json', ...listFiles(dir)];
+  const files = ['package.json', ...(existsSync(join(dir, 'package-lock.json')) ? ['package-lock.json'] : []), ...listFiles(dir)];
+  const pkgBefore = have.get('package.json');
   await Promise.all(files.map(async (rel) => {
     const content = readFileSync(join(dir, rel), 'utf8');
     if (have.get(rel) === content) return;
@@ -111,6 +112,11 @@ async function sync(b: Box, dir: string): Promise<string> {
   for (const rel of [...have.keys()].filter((r) => !files.includes(r))) {
     await call(`${b.toolbox}/files?path=${encodeURIComponent(`${remote}/${rel}`)}`, { method: 'DELETE' }).catch(() => {});
     have.delete(rel);
+  }
+  // Dependencies changed: install them in the sandbox too (never running install scripts).
+  const pkg = have.get('package.json') ?? '';
+  if (pkg !== pkgBefore && /"(dev)?[dD]ependencies"\s*:\s*\{\s*"/.test(pkg)) {
+    await exec(b, 'npm install --ignore-scripts --no-audit --no-fund --loglevel=error', remote, 180);
   }
   return remote;
 }

@@ -4,6 +4,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { ensureDeps } from './packages.ts';
 import { minimalEnv } from './runner.ts';
 import type { Preview } from '@hive/shared/types';
 import { sandboxOn, sandboxServe } from './sandbox.ts';
@@ -37,40 +38,56 @@ async function waitForHttp(url: string, ms: number, alive = () => true): Promise
   return false;
 }
 
-export type Shot = { ok: true; file: string } | { ok: false; why: string };
+// `console`: what the page logged (console.* and uncaught errors), from Chrome's own log.
+export type Shot = { ok: true; file: string; console: string[] } | { ok: false; why: string };
 
-export async function screenshot(dir: string, file: string): Promise<Shot> {
+export async function screenshot(dir: string, file: string, page = '/'): Promise<Shot> {
   if (sandboxOn()) return { ok: false, why: 'agent code runs in the sandbox, so Hive does not start it here' };
   const chrome = findChrome();
+  await ensureDeps(dir);
   if (!chrome) return { ok: false, why: 'no Chrome or Edge found (set CHROME_PATH)' };
   let app: ReturnType<typeof spawn> | null = null;
   let url: string;
   if (existsSync(join(dir, 'src', 'server.js'))) {
     const port = await freePort();
     app = spawn(process.execPath, ['src/server.js'], { cwd: dir, env: { ...minimalEnv(), NODE_ENV: 'production', PORT: String(port) }, stdio: 'ignore' });
-    url = `http://127.0.0.1:${port}/`;
-    if (!await waitForHttp(url, 10000)) { app.kill(); return { ok: false, why: 'src/server.js did not answer on PORT within 10 s' }; }
+    url = `http://127.0.0.1:${port}${page.startsWith('/') ? page : `/${page}`}`;
+    if (!await waitForHttp(`http://127.0.0.1:${port}/`, 10000)) { app.kill(); return { ok: false, why: 'src/server.js did not answer on PORT within 10 s' }; }
   } else if (existsSync(join(dir, 'src', 'index.html'))) {
-    url = pathToFileURL(join(dir, 'src', 'index.html')).href;
+    const html = page.replace(/^\/+/, '').split(/[?#]/)[0] || 'index.html';
+    if (html.includes('..') || !existsSync(join(dir, 'src', html))) return { ok: false, why: `src/${html} does not exist` };
+    url = pathToFileURL(join(dir, 'src', html)).href;
   } else {
     return { ok: false, why: 'nothing to look at yet (no src/server.js or src/index.html)' };
   }
   const profile = mkdtempSync(join(tmpdir(), 'hive-chrome-'));
   mkdirSync(dirname(file), { recursive: true });
   try {
-    await new Promise<void>((resolve, reject) => {
+    const log = await new Promise<string>((resolve, reject) => {
       execFile(chrome, [
         '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--no-default-browser-check',
+        '--enable-logging=stderr', '--v=0',
         `--user-data-dir=${profile}`, '--window-size=1280,800', '--virtual-time-budget=5000', `--screenshot=${file}`, url,
-      ], { timeout: 45000 }, (err) => (err && !existsSync(file) ? reject(err) : resolve()));
+      ], { timeout: 45000, maxBuffer: 4 * 1024 * 1024 }, (err, _out, stderr) => (err && !existsSync(file) ? reject(err) : resolve(String(stderr))));
     });
-    return existsSync(file) ? { ok: true, file } : { ok: false, why: 'the browser produced no screenshot' };
+    return existsSync(file) ? { ok: true, file, console: consoleLines(log) } : { ok: false, why: 'the browser produced no screenshot' };
   } catch (e) {
     return { ok: false, why: `the browser failed: ${(e as Error).message.split('\n')[0].slice(0, 160)}` };
   } finally {
     app?.kill();
     rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
   }
+}
+
+// Chrome's log lines for the page's console: `...:INFO:CONSOLE:12] "message", source: url (12)`.
+export function consoleLines(log: string): string[] {
+  const out: string[] = [];
+  for (const m of log.matchAll(/:(INFO|WARNING|ERROR):CONSOLE[:(](\d+)\)?\] "([\s\S]*?)", source: (\S*) \((\d+)\)/g)) {
+    const where = m[4].split('/').pop() || m[4];
+    out.push(`${m[1] !== 'INFO' || /^Uncaught/.test(m[3]) ? 'error' : 'console'}: ${m[3]} (${where}:${m[5]})`.slice(0, 400));
+    if (out.length >= 40) break;
+  }
+  return out;
 }
 
 // ---- Live preview: what a task's folder (or main) builds, for an iframe or a terminal ----
@@ -100,6 +117,7 @@ export async function livePreview(dir: string, filesUrl: string, host: string): 
 }
 
 async function serveLocal(dir: string, rev: string, host: string): Promise<Preview> {
+  await ensureDeps(dir);
   let s = servers.get(dir);
   if (!s || s.rev !== rev || !alive(s.proc)) {
     s?.proc?.kill();

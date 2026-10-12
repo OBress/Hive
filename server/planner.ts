@@ -4,6 +4,7 @@ import { applyOps, readyTasks } from './graph.ts';
 import { generate, models, type Msg } from './llm.ts';
 import { history } from './history.ts';
 import { current, updateProject } from './projects.ts';
+import { allowText, packagesOn } from './packages.ts';
 import { schedule, specChanged, startTask } from './session.ts';
 import { resetRounds } from './verify.ts';
 
@@ -36,9 +37,9 @@ export async function summarize(taskId: string): Promise<{ summary: string; step
   return { summary, stepIds: recent.map((s) => s.id) };
 }
 
-const STACK_SYSTEM = `You are Hive's architect. Someone, possibly not technical, describes a project; write the stack and spec doc that Hive's planner and coding agents will follow.
+const stackSystem = () => `You are Hive's architect. Someone, possibly not technical, describes a project; write the stack and spec doc that Hive's planner and coding agents will follow.
 
-Hive's coding agents build in a fixed workspace: Node.js ES modules ("type": "module"), Node built-ins only (no npm packages), code under src/, tests under test/ run with node --test. Choose everything within that: e.g. node:http for a web server or API, a JSON file or in-memory Map for storage, plain HTML/CSS/JS strings served by node:http for a UI, node:test and node:assert/strict for tests. Never suggest a database server, framework or package. If people open the result in a browser, it is served by src/server.js (listening on process.env.PORT) or is a static src/index.html: Hive previews it that way.
+Hive's coding agents build in a fixed workspace: Node.js ES modules ("type": "module"), ${packagesOn() ? `Node built-ins first plus these npm packages when they clearly help: ${allowText()} (nothing that needs a build step),` : 'Node built-ins only (no npm packages),'} code under src/, tests under test/ run with node --test. Choose everything within that: e.g. node:http for a web server or API, a JSON file or in-memory Map for storage, plain HTML/CSS/JS strings served by node:http for a UI, node:test and node:assert/strict for tests. Never suggest a database server, a build step, or a package outside that list. If people open the result in a browser, it is served by src/server.js (listening on process.env.PORT) or is a static src/index.html: Hive previews it that way.
 
 Reply in Markdown only, with these sections and nothing else:
 # Stack and spec: <project name>
@@ -60,7 +61,7 @@ Up to three assumptions you made that the person may want to change.`;
 // A first draft of a project's stack / spec doc. The person reviews and edits it before the project is created.
 export async function stackDoc(name: string, goal: string, notes: string): Promise<string> {
   const text = await generate({
-    model: models.planner, system: STACK_SYSTEM, maxTokens: 8000,
+    model: models.planner, system: stackSystem(), maxTokens: 8000,
     messages: [{ role: 'user', content: `Project: ${name}\nGoal: ${goal || '(none given)'}${notes ? `\nWhat they want changed in the last draft: ${notes}` : ''}` }],
   });
   return text.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/^```(?:markdown|md)?\n([\s\S]*?)\n```\s*$/, '$1').trim();

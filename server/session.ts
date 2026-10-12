@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AutonomyMode, Owner, TaskSpec, TaskState } from '@hive/shared/types';
 import {
-  AGENT_SYSTEM, TOOLS, applyEdit, buildMessages, compact, contextText, isTestFile, parseAction, planOf, stateText, toAction, type Action,
+  agentSystem, agentTools, applyEdit, buildMessages, compact, contextText, isTestFile, parseAction, planOf, stateText, toAction, type Action,
 } from './agent.ts';
 import {
   addChat, addStep, HttpError, live, openTerminal, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks,
@@ -10,14 +10,17 @@ import {
 } from './doc.ts';
 import { AGENT, personAuthor, type GitUser } from './git.ts';
 import { autoStartable, readyTasks, waitingForOk } from './graph.ts';
-import { agentMaxTokens, contextBudget, generateTurn, sleep, models, type Msg, type ToolCall, type ToolResult, type Turn } from './llm.ts';
+import { agentMaxTokens, agentVision, contextBudget, generateTurn, sleep, type ToolDef, models, type Msg, type ToolCall, type ToolResult, type Turn } from './llm.ts';
 import { saveTranscript } from './history.ts';
 import { openCodeOn, search } from './opencode.ts';
-import { current, currentId, inProject, sessionsDir, workspaceDir } from './projects.ts';
+import { current, currentId, inProject, projectDir, sessionsDir, workspaceDir } from './projects.ts';
 import { summarize } from './planner.ts';
 import { review, reviewOn } from './review.ts';
 import { afterSchedule } from './verify.ts';
 import { checkSyntax, runCli, runTests } from './runner.ts';
+import { install } from './packages.ts';
+import { findChrome, screenshot } from './preview.ts';
+import { sandboxOn } from './sandbox.ts';
 import {
   commitAll, diff, ensureWorktree, head, listFiles, conflictHunks, hasMarkers, mergeToMain, readFile, safePath, searchFiles, syncMain, worktreeDir, writeFile,
 } from './workspace.ts';
@@ -249,7 +252,7 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
   let reply: Turn;
   try {
     reply = await generateTurn({
-      model: models.agent, system: AGENT_SYSTEM, tools: TOOLS, messages, signal: ctrl.signal, maxTokens: agentMaxTokens(),
+      model: models.agent, system: setup().system, tools: setup().tools, messages, signal: ctrl.signal, maxTokens: agentMaxTokens(),
       onToken: view.text, onReasoning: view.reasoning, onToolInput: view.tool,
     });
   } catch (e) {
@@ -295,8 +298,9 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
     const { action, error } = toAction(c);
     if (!action) { s.results!.push({ id: c.id, content: `Error: ${error}`, isError: true }); continue; }
     if (action.type === 'finish') { finishing = { id: c.id, summary: action.summary }; continue; }
-    const out = await perform(s, t, dir, action).catch((e: Error) => `Error: ${e.message}`);
-    s.results!.push({ id: c.id, content: out, isError: out.startsWith('Error:') || undefined });
+    const images: string[] = [];
+    const out = await perform(s, t, dir, action, images).catch((e: Error) => `Error: ${e.message}`);
+    s.results!.push({ id: c.id, content: out, isError: out.startsWith('Error:') || undefined, ...(images.length ? { images } : {}) });
   }
   if (finishing) {
     const ok = s.testOk;
@@ -376,7 +380,16 @@ const filesNow = (dir: string) => `Files in the workspace now: ${listFiles(dir).
 const MAX_READ = 30000;
 
 // Run one action; returns what the model sees. Errors start with "Error:".
-async function perform(s: SessionData, t: TaskSpec, dir: string, a: Action): Promise<string> {
+// The tools, prompt and whether the agent model sees images: fixed for the life of the server (so prompts cache).
+let agentSetup: { tools: ToolDef[]; system: string; vision: boolean } | null = null;
+function setup() {
+  if (agentSetup) return agentSetup;
+  const vision = agentVision();
+  const tools = agentTools(!sandboxOn() && !!findChrome());
+  return (agentSetup = { tools, vision, system: agentSystem(tools, vision) });
+}
+
+async function perform(s: SessionData, t: TaskSpec, dir: string, a: Action, images: string[] = []): Promise<string> {
   if (a.type === 'read') {
     const content = readFile(dir, a.path);
     addStep({ ...ref(s), kind: 'read', text: `Read ${a.path}`, path: a.path });
@@ -429,6 +442,28 @@ async function perform(s: SessionData, t: TaskSpec, dir: string, a: Action): Pro
     const r = readFile(dir, 'src/cli.js') === null ? null : await runCliIn(t.id, dir, 'agent', a.args);
     return r ? `${r.cmd} exited with ${r.exitCode}${r.exitCode === 124 ? ' (stopped after 15 s)' : ''}. Output:\n${r.output.slice(-2000) || '(nothing)'}`
       : `Error: src/cli.js does not exist, so there is nothing to run. ${filesNow(dir)}`;
+  }
+  if (a.type === 'install') {
+    const term = openTerminal(t.id, 'agent', `npm install ${a.packages.join(' ')}`);
+    const r = await install(dir, a.packages, term.write);
+    term.end(r.code);
+    const commit = r.code === 0 ? await commitAll(dir, AGENT, `${t.title}: add ${a.packages.join(', ')}`) : null;
+    addStep({ ...ref(s), kind: 'run', text: r.code === 0 ? `Installed ${a.packages.join(', ')}` : `npm install ${a.packages.join(' ')} failed`, output: r.output, commit: commit ?? undefined });
+    if (r.code !== 0) return `Error: npm install failed:\n${r.output.slice(-2000)}`;
+    s.testOk = false;
+    return `Installed ${a.packages.join(', ')}${commit ? ` (commit ${commit})` : ''}. package.json now lists them.`;
+  }
+  if (a.type === 'screenshot') {
+    const rel = `previews/${t.id}-${Date.now()}.png`;
+    const shot = await screenshot(dir, join(projectDir(), rel), a.page);
+    if (!shot.ok) {
+      addStep({ ...ref(s), kind: 'run', text: `Screenshot of ${a.page} failed: ${shot.why}` });
+      return `Error: ${shot.why}`;
+    }
+    const errors = shot.console.filter((l) => l.startsWith('error:')).length;
+    addStep({ ...ref(s), kind: 'run', text: `Screenshot of ${a.page}${errors ? `: ${errors} console error${errors > 1 ? 's' : ''}` : ''}`, image: rel, output: shot.console.join('\n') });
+    if (setup().vision) images.push(readFileSync(shot.file).toString('base64'));
+    return `Opened ${a.page} in a headless browser (1280x800).${setup().vision ? ' The screenshot is attached.' : ''}\nConsole output:\n${shot.console.join('\n') || '(nothing logged)'}`;
   }
   // A finish written as a text tag (the fallback path).
   if (!s.testOk) return 'Run the whole test suite and make every test pass before finishing.';

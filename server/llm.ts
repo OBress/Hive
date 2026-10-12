@@ -75,6 +75,13 @@ export async function initModels() {
 // OpenAI-compatible providers often cap output at 8192; raise AGENT_MAX_TOKENS if yours allows more.
 export const agentMaxTokens = () => Number(process.env.AGENT_MAX_TOKENS) || (provider === 'anthropic' ? 64000 : 8192);
 
+// Whether the agent model gets screenshots as images: AGENT_VISION=on/off; by default only Claude does (DeepSeek
+// and many OpenAI-compatible models are text-only and reject images).
+export const agentVision = () => {
+  const v = process.env.AGENT_VISION?.trim().toLowerCase();
+  return v ? v === 'on' : provider === 'anthropic';
+};
+
 // How many characters of transcript an agent keeps before older steps are shortened (agent.ts compact()).
 // Claude has a 1M-token window and clears old tool results server-side, so it gets far more room.
 export const contextBudget = () => Number(process.env.AGENT_CONTEXT_CHARS) || (provider === 'anthropic' ? 1_500_000 : 300_000);
