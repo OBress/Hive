@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { ARRAYS, MAPS } from '@hive/shared/types';
 import { addChat, addStep, HttpError, getDoc } from './doc.ts';
-import { githubTokens, authEnabled, supabasePeople } from './auth.ts';
+import { githubTokens, githubTokensByLogin, authEnabled, supabasePeople } from './auth.ts';
 import { withRepoLock } from './git.ts';
 import { createRepo, pushMain, remoteFor } from './github.ts';
 import { models, provider } from './llm.ts';
@@ -107,6 +107,7 @@ api.post('/github/token', (req, res) => {
   const user = res.locals.user;
   if (!user) throw new HttpError(400, 'Sign-in is off on this server; set GITHUB_TOKEN in .env to push');
   githubTokens.set(user.id, providerToken);
+  githubTokensByLogin.set(user.login.toLowerCase(), providerToken);
   res.json({ ok: true });
 });
 

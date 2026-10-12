@@ -23,7 +23,7 @@ import { install } from './packages.ts';
 import { findChrome, screenshot } from './preview.ts';
 import { sandboxOn } from './sandbox.ts';
 import {
-  commitAll, diff, ensureWorktree, head, listFiles, conflictHunks, hasMarkers, mergeToMain, readFile, safePath, searchFiles, syncMain, worktreeDir, writeFile,
+  backup, commitAll, diff, ensureWorktree, head, listFiles, conflictHunks, hasMarkers, mergeToMain, readFile, safePath, searchFiles, syncMain, worktreeDir, writeFile,
 } from './workspace.ts';
 
 const MAX_PARALLEL = Number(process.env.MAX_PARALLEL || 4);
@@ -211,6 +211,8 @@ async function loop(sid: string) {
   const ctrl = new AbortController();
   active.set(key(sid), ctrl);
   try {
+    const taskId = load(sid)?.taskId;
+    if (taskId) await ensureWorktree(taskId);   // the folder may be gone since the session began (redeploy, wiped data/)
     while (await turn(sid, ctrl));
   } catch (e) {
     console.error(`Session ${sid} crashed:`, e);
@@ -435,6 +437,7 @@ async function perform(s: SessionData, t: TaskSpec, dir: string, a: Action, imag
     }
     writeFile(dir, a.path, content);
     const commit = await commitAll(dir, AGENT, `${t.title}: ${a.type} ${a.path}`);
+    if (commit) backup(t.id);
     const d = commit ? await diff(dir, 'HEAD~1', 'HEAD', a.path) : '';
     const verb = a.type === 'write' ? 'Wrote' : 'Edited';
     addStep({ ...ref(s), kind: 'edit', text: `${verb} ${a.path}`, path: a.path, diff: d, commit: commit ?? undefined });
@@ -464,6 +467,7 @@ async function perform(s: SessionData, t: TaskSpec, dir: string, a: Action, imag
     const r = await install(dir, a.packages, term.write);
     term.end(r.code);
     const commit = r.code === 0 ? await commitAll(dir, AGENT, `${t.title}: add ${a.packages.join(', ')}`) : null;
+    if (commit) backup(t.id);
     addStep({ ...ref(s), kind: 'run', text: r.code === 0 ? `Installed ${a.packages.join(', ')}` : `npm install ${a.packages.join(' ')} failed`, output: r.output, commit: commit ?? undefined });
     if (r.code !== 0) return `Error: npm install failed:\n${r.output.slice(-2000)}`;
     s.testOk = false;
@@ -536,6 +540,7 @@ async function finish(s: SessionData, t: TaskSpec, summary: string) {
     if (s.conflicts > 4) return stuck(`Merge conflict in ${m.files.join(', ') || 'unknown files'}`);
     return back('Main changed while you were finishing. Run the whole test suite, then call finish again.');
   }
+  backup(t.id);
   addStep({ ...ref(s), kind: 'merge', text: `${reviewed ? 'Reviewed and merged' : 'Merged'} task/${t.id} into main`, commit: m.commit });
   setTaskState(t.id, { status: 'done', note: undefined });
   setSession(s.id, { state: 'done', summary });
@@ -655,6 +660,7 @@ export async function humanEdit(taskId: string, path: unknown, content: string, 
   if (!dir) throw new HttpError(409, 'Task has no worktree yet');
   writeFile(dir, p, content);
   const commit = await commitAll(dir, personAuthor(by, user), `${t.title}: ${by} edited ${p}`);
+  if (commit) backup(taskId);
   const d = commit ? await diff(dir, 'HEAD~1', 'HEAD', p) : '';
   const sid = st.sessionId;
   addStep({ taskId, sessionId: sid, kind: 'human-edit', by, text: `${by} edited ${p}`, path: p, diff: d, commit: commit ?? undefined });

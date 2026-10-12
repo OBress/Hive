@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Router, type Request } from 'express';
-import { authEnabled } from './auth.ts';
+import { authEnabled, githubTokensByLogin } from './auth.ts';
 import { HttpError } from './doc.ts';
 import { DATA_DIR, SERVER_DIR } from './paths.ts';
 import { current } from './projects.ts';
@@ -27,8 +27,18 @@ export async function initEpoch(freshDoc: boolean) {
 
 // The current project's push target: its repo (set on Overview, owner/repo), else GITHUB_REMOTE.
 export function pushRemote(): string {
-  const repo = current().repo;
+  const repo = current()?.repo;
   return repo ? `https://github.com/${repo}.git` : process.env.GITHUB_REMOTE?.trim() ?? '';
+}
+
+// A token that can push the current project's repo without a request: a signed-in member's (owner first), else GITHUB_TOKEN.
+export function projectToken(): string | undefined {
+  const p = current();
+  for (const login of p ? [p.createdBy, ...p.sharedWith] : []) {
+    const t = githubTokensByLogin.get(login.toLowerCase());
+    if (t) return t;
+  }
+  return process.env.GITHUB_TOKEN?.trim() || undefined;
 }
 
 // Every variable the server reads (names only ever leave the server, never values).

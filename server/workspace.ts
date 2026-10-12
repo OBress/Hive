@@ -2,33 +2,87 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, write
 import { dirname, join, posix } from 'node:path';
 import { git, withRepoLock, HIVE, type Author } from './git.ts';
 import { TEMPLATE } from './paths.ts';
-import { workspaceDir, worktreesDir } from './projects.ts';
+import { fetchRef, pushRef } from './github.ts';
+import { currentId, inProject, workspaceDir, worktreesDir } from './projects.ts';
+import { projectToken, pushRemote } from './settings.ts';
 
 export const worktreeDir = (taskId: string) => join(worktreesDir(), taskId);
 
+// The project's GitHub repo and a token for it, or null: backups and restores are skipped without one.
+function remote(): { url: string; token: string } | null {
+  const url = pushRemote();
+  const token = projectToken();
+  return url && token ? { url, token } : null;
+}
+
+// A missing workspace (new machine, wiped data/) is restored from GitHub when it can be: the last merged main
+// (backed up to hive/main), else the approved main; otherwise it starts from the template.
 export async function ensureWorkspace() {
   const repo = workspaceDir();
   if (existsSync(join(repo, '.git'))) return;
   rmSync(repo, { recursive: true, force: true });
-  cpSync(TEMPLATE, repo, { recursive: true });
+  mkdirSync(repo, { recursive: true });
   await git(repo, ['init', '-b', 'main']);
+  const r = remote();
+  for (const from of r ? ['hive/main', 'main'] : []) {
+    const got = await fetchRef(repo, r!.url, r!.token, `refs/heads/${from}:refs/heads/main`).catch((e: Error) => {
+      console.error(`Could not restore ${repo} from GitHub: ${e.message.slice(0, 200)}`);
+      return false;
+    });
+    if (got) {
+      await git(repo, ['reset', '--hard', 'main']);
+      console.log(`Restored ${repo} from ${r!.url} (${from})`);
+      return;
+    }
+  }
+  cpSync(TEMPLATE, repo, { recursive: true });
   await git(repo, ['add', '-A']);
   await git(repo, ['commit', '-m', 'Start Hive workspace'], HIVE);
   console.log(`Created ${repo}`);
 }
 
-// Each task gets its own folder on branch task/<id>, cut from main.
+// Push a task's branch (and the merged main, to hive/main) to the project's GitHub repo, at most every 15 s per
+// task, so work survives the machine going away. Never blocks or fails the caller.
+const pending = new Map<string, NodeJS.Timeout>();
+export function backup(taskId: string) {
+  const r = remote();
+  if (!r) return;
+  const project = currentId();
+  const k = `${project}/${taskId}`;
+  if (pending.has(k)) return;
+  pending.set(k, setTimeout(() => inProject(project, () => {
+    pending.delete(k);
+    return backupNow(taskId).catch((e: Error) => console.error(`Backup of task/${taskId} failed: ${e.message.slice(0, 200)}`));
+  }), 15000));
+}
+export async function backupNow(taskId: string) {
+  const r = remote();
+  if (!r) return;
+  const refs = [`+refs/heads/task/${taskId}:refs/heads/task/${taskId}`, '+refs/heads/main:refs/heads/hive/main'];
+  await pushRef(workspaceDir(), r.url, r.token, ...refs);
+}
+
+// Each task gets its own folder on branch task/<id>, cut from main. A folder that lost its git link (data/ wiped
+// or the workspace recreated while the session lived on) is rebuilt, keeping the src/ and test/ files it had.
 export function ensureWorktree(taskId: string): Promise<string> {
   const dir = worktreeDir(taskId);
   const repo = workspaceDir();
   return withRepoLock(async () => {
-    if (existsSync(join(dir, '.git'))) return dir;
+    if (await git(dir, ['rev-parse', '--git-dir']).then(() => existsSync(join(dir, '.git')), () => false)) return dir;
+    const kept = existsSync(dir) ? listFiles(dir).map((f) => [f, readFile(dir, f)!] as const) : [];
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(worktreesDir(), { recursive: true });
     await git(repo, ['worktree', 'prune']);
     const branch = `task/${taskId}`;
-    const exists = await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
+    const local = () => git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
+    let exists = await local();
+    const r = remote();
+    if (!exists && r) {   // a new machine: the branch may be backed up on GitHub
+      exists = await fetchRef(repo, r.url, r.token, `refs/heads/${branch}:refs/heads/${branch}`)
+        .catch((e: Error) => { console.error(`Could not restore ${branch} from GitHub: ${e.message.slice(0, 200)}`); return false; });
+    }
     await git(repo, exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', dir, '-b', branch, 'main']);
+    for (const [f, content] of kept) writeFile(dir, f, content);
     return dir;
   });
 }

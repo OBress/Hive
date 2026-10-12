@@ -22,12 +22,22 @@ export async function createRepo(token: string, name: string, fallback: string, 
   throw new Error('GitHub could not create the repo');
 }
 
-// Push `dir`'s main to `remote` (an https GitHub URL) with `token`.
-export async function pushMain(dir: string, remote: string, token: string): Promise<void> {
+// Run a git push or fetch against `remote` (an https GitHub URL) with `token`, keeping the token out of errors.
+async function withRemote(dir: string, remote: string, token: string, args: (url: string) => string[]): Promise<string> {
   const authed = remote.replace(/^https:\/\//, `https://x-access-token:${encodeURIComponent(token)}@`);
   try {
-    await git(dir, ['-c', 'credential.helper=', 'push', authed, 'main:main']);
+    return await git(dir, ['-c', 'credential.helper=', ...args(authed)]);
   } catch (e) {
     throw new Error((e as Error).message.split(authed).join(remote).split(token).join('***').split(encodeURIComponent(token)).join('***'));
   }
 }
+
+export const pushMain = (dir: string, remote: string, token: string) => pushRef(dir, remote, token, 'main:main');
+export const pushRef = (dir: string, remote: string, token: string, ...refspecs: string[]) =>
+  withRemote(dir, remote, token, (url) => ['push', url, ...refspecs]).then(() => {});
+// Fetch `refspec` (e.g. "refs/heads/task/a:refs/heads/task/a"); false if the remote does not have it.
+export const fetchRef = (dir: string, remote: string, token: string, refspec: string) =>
+  withRemote(dir, remote, token, (url) => ['fetch', '--update-head-ok', url, refspec]).then(() => true, (e: Error) => {
+    if (/couldn't find remote ref|not our ref/i.test(e.message)) return false;
+    throw e;
+  });

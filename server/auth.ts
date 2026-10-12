@@ -12,6 +12,8 @@ let supabaseRest: { url: string; key: string } | null = null;
 const cache = new Map<string, { user: HiveUser | null; at: number }>();
 // GitHub provider tokens by Supabase user id: server memory only, never the doc, logs, disk or responses.
 export const githubTokens = new Map<string, string>();
+// The same tokens by lowercase GitHub login, so background work (task branch backups) can push for a project member.
+export const githubTokensByLogin = new Map<string, string>();
 
 export const authEnabled = () => verifier !== null;
 
