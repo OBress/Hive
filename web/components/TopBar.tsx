@@ -11,6 +11,7 @@ import { Avatar, Icon } from './ui';
 const TABS = [
   { href: '/overview', label: 'Overview' },
   { href: '/tasks', label: 'Tasks' },
+  { href: '/preview', label: 'Preview' },
   { href: '/architecture', label: 'Architecture' },
   { href: '/environment', label: 'Environment' },
 ];
