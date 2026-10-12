@@ -37,7 +37,10 @@ export async function ensureWorkspace() {
   }
   cpSync(TEMPLATE, repo, { recursive: true });
   await git(repo, ['add', '-A']);
-  await git(repo, ['commit', '-m', 'Start Hive workspace'], HIVE);
+  // A fixed date makes this first commit identical every time the template is used, so a workspace recreated after
+  // data/ was lost shares its root with the branches backed up from the old one.
+  const epoch = { GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z' };
+  await git(repo, ['commit', '-m', 'Start Hive workspace'], HIVE, epoch);
   console.log(`Created ${repo}`);
 }
 
@@ -165,7 +168,7 @@ export function mergeToMain(taskId: string): Promise<{ ok: true; commit: string 
   const repo = workspaceDir();
   return withRepoLock(async () => {
     try {
-      await git(repo, ['merge', '--no-ff', '-m', `Merge task/${taskId}`, `task/${taskId}`], HIVE);
+      await git(repo, ['merge', '--no-ff', '--allow-unrelated-histories', '-m', `Merge task/${taskId}`, `task/${taskId}`], HIVE);
       return { ok: true as const, commit: await head(repo) };
     } catch {
       const files = (await git(repo, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')).split('\n').filter(Boolean);
@@ -182,7 +185,7 @@ export function syncMain(taskId: string): Promise<{ changed: boolean; conflicts:
   return withRepoLock(async () => {
     const before = await head(dir);
     try {
-      await git(dir, ['merge', '--no-edit', '-m', `Merge main into task/${taskId}`, 'main'], HIVE);
+      await git(dir, ['merge', '--no-edit', '--allow-unrelated-histories', '-m', `Merge main into task/${taskId}`, 'main'], HIVE);
     } catch (e) {
       const unmerged = (await git(dir, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')).split('\n').filter(Boolean);
       if (!unmerged.length) { await git(dir, ['merge', '--abort']).catch(() => {}); throw e; }

@@ -28,6 +28,23 @@ test('a project without its own repo has no push or restore target', async () =>
   delete process.env.GITHUB_REMOTE;
 });
 
+test('a task branch from an older copy of the workspace still merges with main', async () => {
+  const p = await createProject('Unrelated test', '', 'ana');
+  await inProject(p.id, async () => {
+    await ws.ensureWorkspace();
+    const a = await ws.ensureWorktree('a');
+    writeFileSync(join(a, 'src', 'a.js'), 'export const a = 1;\n');
+    await ws.commitAll(a, AGENT, 'a');
+    // data/ was lost: main is rebuilt from a different root while task/a comes back from GitHub as it was.
+    const main = a.replace(/worktrees.a$/, 'workspace');
+    await git(main, ['checkout', '--orphan', 'fresh']);
+    await git(main, ['commit', '--allow-empty', '-m', 'Start Hive workspace again'], AGENT);
+    await git(main, ['branch', '-M', 'main']);
+    expect(await ws.syncMain('a')).toEqual({ changed: true, conflicts: [] });
+    expect((await ws.mergeToMain('a')).ok).toBe(true);
+  });
+}, 60000);
+
 test('git never reaches a repo above data/', async () => {
   const plain = join(DATA, 'not-a-repo');
   mkdirSync(plain, { recursive: true });
