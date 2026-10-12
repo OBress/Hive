@@ -109,12 +109,16 @@ export async function generateTurn(opts: GenerateOptions): Promise<Turn> {
     const mark = <T extends unknown[]>(f?: (...a: T) => void) => (...a: T) => { emitted = true; f?.(...a); };
     const o = { ...opts, onToken: mark(opts.onToken), onReasoning: mark(opts.onReasoning), onToolInput: mark(opts.onToolInput) };
     const call = provider === 'fake' ? fakeTurn : provider === 'anthropic' ? anthropicTurn : openaiTurn;
-    try {
-      return await call(o);
-    } catch (e) {
-      if (opts.signal?.aborted || emitted || !retryable(e)) throw e;
-      await sleep(1000, opts.signal);
-      return await call(o);
+    // Rate limits, overloads and dropped connections are retried with exponential backoff (honouring Retry-After),
+    // as long as nothing has streamed yet.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await call(o);
+      } catch (e) {
+        if (opts.signal?.aborted || emitted || !retryable(e) || attempt >= 4) throw e;
+        const after = Number((e as { retryAfter?: number }).retryAfter) || 0;
+        await sleep(Math.min(60000, Math.max(after * 1000, 1000 * 2 ** attempt) + Math.random() * 500), opts.signal);
+      }
     }
   } finally {
     release();
@@ -128,7 +132,7 @@ export async function generate(opts: GenerateOptions): Promise<string> {
 
 const retryable = (e: unknown) => {
   const status = (e as { status?: number }).status;
-  return status === undefined ? e instanceof TypeError || (e as Error).name === 'APIConnectionError' : status === 429 || status >= 500;
+  return status === undefined ? e instanceof TypeError || (e as Error).name === 'APIConnectionError' : status === 408 || status === 429 || status >= 500;
 };
 
 export function sleep(ms: number, signal?: AbortSignal) {
@@ -197,7 +201,7 @@ async function openaiTurn(o: GenerateOptions): Promise<Turn> {
       console.log('The provider rejected JSON mode; planner replies are parsed from plain text instead');
       return openaiTurn(o);
     }
-    throw Object.assign(new Error(`LLM HTTP ${res.status}: ${body}`), { status: res.status });
+    throw Object.assign(new Error(`LLM HTTP ${res.status}: ${body}`), { status: res.status, retryAfter: Number(res.headers.get('retry-after')) || undefined });
   }
   const decoder = new TextDecoder();
   let buf = '';
@@ -271,7 +275,7 @@ const adaptive = (model: string) => /^claude-(opus|sonnet|haiku|fable|mythos)-(5
 const withFallbacks = (model: string) => /^claude-(opus-5-5|opus-5|sonnet-5-5|fable-5-1)$/.test(model);
 
 async function anthropicTurn(o: GenerateOptions): Promise<Turn> {
-  anthropic ??= new Anthropic();
+  anthropic ??= new Anthropic({ maxRetries: 4 });
   const betas = ['context-management-2025-06-27'];
   const tools = o.tools?.length;
   if (withFallbacks(o.model)) betas.push('server-side-fallback-2026-07-01');

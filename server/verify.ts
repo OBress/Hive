@@ -16,7 +16,7 @@ import { listFiles } from './workspace.ts';
 // screenshot of the app when it can, and decides whether the goal is met. If not it adds follow-up tasks:
 // Automatic runs them, Semi-auto marks them "ask" so a person OKs each one. At most MAX_ROUNDS checks run
 // before a person speaks again (chat or a mode change), and the graph never grows past MAX_TASKS.
-// It also says once when the graph is stuck: nothing running or startable because tasks failed twice.
+// It also says once when the graph is stuck: nothing running or startable because tasks failed three times.
 
 const MAX_ROUNDS = 3;
 const MAX_TASKS = 40;
@@ -49,7 +49,7 @@ export async function afterSchedule() {
     const stuck = ids.filter((t) => states[t]?.status === 'failed' || states[t]?.status === 'needs_review');
     if (moving || !stuck.length) return;
     seen.set(id, sig);
-    addChat({ from: 'planner', text: `I stopped: ${stuck.map((t) => all[t].title).join(', ')} ${stuck.length > 1 ? 'are' : 'is'} stuck (failed twice or needs review), and the rest depends on ${stuck.length > 1 ? 'them' : 'it'}. Take it over, change its spec, or press Start to try again.`, taskIds: stuck });
+    addChat({ from: 'planner', text: `I stopped: ${stuck.map((t) => all[t].title).join(', ')} ${stuck.length > 1 ? 'are' : 'is'} stuck (failed three times or needs review), and the rest depends on ${stuck.length > 1 ? 'them' : 'it'}. Take it over, change its spec, or press Start to try again.`, taskIds: stuck });
     return;
   }
 

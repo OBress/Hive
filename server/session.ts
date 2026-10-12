@@ -10,19 +10,19 @@ import {
 } from './doc.ts';
 import { AGENT, personAuthor, type GitUser } from './git.ts';
 import { autoStartable, readyTasks, waitingForOk } from './graph.ts';
-import { agentMaxTokens, contextBudget, generateTurn, models, type Msg, type ToolCall, type ToolResult, type Turn } from './llm.ts';
+import { agentMaxTokens, contextBudget, generateTurn, sleep, models, type Msg, type ToolCall, type ToolResult, type Turn } from './llm.ts';
 import { saveTranscript } from './history.ts';
 import { openCodeOn, search } from './opencode.ts';
 import { current, currentId, inProject, sessionsDir, workspaceDir } from './projects.ts';
 import { summarize } from './planner.ts';
 import { afterSchedule } from './verify.ts';
-import { runCli, runTests } from './runner.ts';
+import { checkSyntax, runCli, runTests } from './runner.ts';
 import {
   commitAll, diff, ensureWorktree, head, listFiles, mergeToMain, readFile, safePath, searchFiles, takeMain, worktreeDir, writeFile,
 } from './workspace.ts';
 
 const MAX_PARALLEL = Number(process.env.MAX_PARALLEL || 2);
-const MAX_STEPS = Number(process.env.MAX_STEPS || 20);
+const MAX_STEPS = Number(process.env.MAX_STEPS || 60);
 const AGENT_OWNER: Owner = { kind: 'agent', name: 'agent' };
 
 // Server-side session state; the transcript never goes into the doc.
@@ -44,9 +44,10 @@ export interface SessionData {
 const cache = new Map<string, SessionData>();
 const active = new Map<string, AbortController>();   // sessions with a running loop
 const rerun = new Set<string>();
-// Per project/task, in memory: tasks already announced as waiting for an OK, and failed tasks already retried.
+// Per project/task, in memory: tasks already announced as waiting for an OK, and how often failed tasks were retried.
 const announced = new Set<string>();
-const retried = new Set<string>();
+const retried = new Map<string, number>();
+const RETRIES = 2;
 const queued = new Set<string>();     // Run ready in Manual: tasks that were ready then, started as slots free up
 const key = (sid: string) => `${currentId()}/${sid}`;
 
@@ -77,7 +78,7 @@ export function stopProject() {
   const prefix = `${currentId()}/`;
   for (const [k, c] of active) if (k.startsWith(prefix)) c.abort();
   for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k);
-  for (const set of [announced, retried, queued]) for (const k of [...set]) if (k.startsWith(prefix)) set.delete(k);
+  for (const set of [announced, retried, queued]) for (const k of [...set.keys()]) if (k.startsWith(prefix)) set.delete(k);
 }
 
 export function getTask(id: string): TaskSpec {
@@ -172,9 +173,10 @@ export function schedule(): string[] {
   for (const st of taskState().values()) {
     if (st.owner.kind !== 'agent') continue;
     if (st.status === 'paused' && st.note === 'server restarted') setTaskState(st.taskId, { status: 'todo', note: undefined });
-    else if (st.status === 'failed' && !retried.has(k(st.taskId))) {
-      retried.add(k(st.taskId));
-      addStep({ taskId: st.taskId, kind: 'error', by: 'planner', text: `Retrying once after: ${st.note ?? 'failure'}` });
+    else if (st.status === 'failed' && (retried.get(k(st.taskId)) ?? 0) < RETRIES) {
+      const n = (retried.get(k(st.taskId)) ?? 0) + 1;
+      retried.set(k(st.taskId), n);
+      addStep({ taskId: st.taskId, kind: 'error', by: 'planner', text: `Retrying (${n} of ${RETRIES}) after: ${st.note ?? 'failure'}` });
       setTaskState(st.taskId, { status: 'todo', note: 'Retrying after a failure' });
     }
   }
@@ -253,7 +255,8 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
     if (ctrl.signal.aborted) return false;
     if ((e as { badReply?: boolean }).badReply) return badReply(s, (e as Error).message);
     console.error(`Model error in ${sid}:`, (e as Error).message);
-    if (++s.errors >= 2) { fail(s, `Model error: ${(e as Error).message}`); return false; }
+    if (++s.errors >= 3) { fail(s, `Model error: ${(e as Error).message}`); return false; }
+    await sleep(5000 * s.errors, ctrl.signal).catch(() => {});   // the provider already retried; give it a moment
     return true;
   } finally {
     view.end();
@@ -401,17 +404,20 @@ async function perform(s: SessionData, t: TaskSpec, dir: string, a: Action): Pro
     const verb = a.type === 'write' ? 'Wrote' : 'Edited';
     addStep({ ...ref(s), kind: 'edit', text: `${verb} ${a.path}`, path: a.path, diff: d, commit: commit ?? undefined });
     if (commit) s.testOk = false;
-    return commit ? `${verb} ${a.path} (commit ${commit}).` : `${a.path} is unchanged.`;
+    const syntax = await checkSyntax(dir, a.path, content);
+    const done = commit ? `${verb} ${a.path} (commit ${commit}).` : `${a.path} is unchanged.`;
+    return syntax ? `${done} But it does not parse; fix this before running tests:\n${syntax}` : done;
   }
   if (a.type === 'test') {
     const term = openTerminal(t.id, 'agent', ['node --test', ...(a.files ?? [])].join(' '));
-    const { sandbox, ...r } = await runTests(dir, term.write, a.files);
+    const { sandbox, failures: why, ...r } = await runTests(dir, term.write, a.files);
     term.end(r.failed ? 1 : 0);
     addStep({ ...ref(s), kind: 'test', text: `Tests${a.files ? ` (${a.files.join(', ')})` : ''}: ${r.passed} passed, ${r.failed} failed${sandbox ? ' (in sandbox)' : ''}`, test: r });
     setTaskState(t.id, { lastTest: { passed: r.passed, failed: r.failed } });
     if (!a.files) s.testOk = r.failed === 0 && r.passed > 0;
     const ran = a.files ?? listFiles(dir).filter(isTestFile);
-    return `Test results: ${r.passed} passed, ${r.failed} failed. Test files that ran: ${ran.join(', ') || 'none'}.\n${r.output.slice(-4000)}`;
+    const detail = why ? `Failures:\n${why}\n\nEnd of the output:\n${r.output.slice(-1500)}` : r.output.slice(-1500);
+    return `Test results: ${r.passed} passed, ${r.failed} failed. Test files that ran: ${ran.join(', ') || 'none'}.\n${detail}`;
   }
   if (a.type === 'run') {
     const r = readFile(dir, 'src/cli.js') === null ? null : await runCliIn(t.id, dir, 'agent', a.args);
