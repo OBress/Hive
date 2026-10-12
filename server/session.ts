@@ -15,10 +15,11 @@ import { saveTranscript } from './history.ts';
 import { openCodeOn, search } from './opencode.ts';
 import { current, currentId, inProject, sessionsDir, workspaceDir } from './projects.ts';
 import { summarize } from './planner.ts';
+import { review, reviewOn } from './review.ts';
 import { afterSchedule } from './verify.ts';
 import { checkSyntax, runCli, runTests } from './runner.ts';
 import {
-  commitAll, diff, ensureWorktree, head, listFiles, mergeToMain, readFile, safePath, searchFiles, takeMain, worktreeDir, writeFile,
+  commitAll, diff, ensureWorktree, head, listFiles, conflictHunks, hasMarkers, mergeToMain, readFile, safePath, searchFiles, syncMain, worktreeDir, writeFile,
 } from './workspace.ts';
 
 const MAX_PARALLEL = Number(process.env.MAX_PARALLEL || 2);
@@ -38,6 +39,7 @@ export interface SessionData {
   testOk: boolean;            // last test run passed with no writes since
   bad: number; errors: number;
   conflicts?: number;         // merge conflicts the agent has been asked to reconcile in this run
+  reviews?: number;           // reviews that sent the change back in this run
 }
 
 // Keyed by project/session id; everything below runs inside one project (see projects.ts).
@@ -115,7 +117,7 @@ export function startTask(taskId: string, by: string): Promise<string> {
   if (waiting.length) throw new HttpError(409, `Waiting on: ${waiting.join(', ')}`);
   setTaskState(taskId, { status: 'running', owner: AGENT_OWNER, note: undefined });   // claim it before any await
   return ensureSession(taskId, by).then((s) => {
-    Object.assign(s, { limit: s.stepCount + MAX_STEPS, bad: 0, errors: 0 });
+    Object.assign(s, { limit: s.stepCount + MAX_STEPS, bad: 0, errors: 0, reviews: 0 });
     save(s);
     setSession(s.id, { state: 'running' });
     resume(s.id);
@@ -298,8 +300,12 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
   }
   if (finishing) {
     const ok = s.testOk;
-    s.results!.push({ id: finishing.id, content: ok ? 'Finishing.' : 'Error: run the whole test suite (run_tests with no files) and make every test pass before finishing.', isError: !ok || undefined });
-    if (ok) await finish(s, t, finishing.summary);
+    if (!ok) s.results!.push({ id: finishing.id, content: 'Error: run the whole test suite (run_tests with no files) and make every test pass before finishing.', isError: true });
+    else {
+      await finish(s, t, finishing.summary);
+      const done = taskState().get(t.id)?.status === 'done';
+      s.results!.push({ id: finishing.id, content: done ? 'Merged into main. The task is done.' : 'Not merged yet; see the note below.' });
+    }
   }
   save(s);
   if (s.stepCount % 8 === 0) void summarize(s.taskId).catch(() => {});   // rolling summary covers older turns
@@ -430,27 +436,58 @@ async function perform(s: SessionData, t: TaskSpec, dir: string, a: Action): Pro
   return 'Finishing.';
 }
 
+// Finishing: bring main in (other tasks' work), re-test if it changed anything, have a reviewer look, then merge.
+// Each step that finds a problem hands it back to the agent with what to fix; the agent calls finish again.
 async function finish(s: SessionData, t: TaskSpec, summary: string) {
-  addStep({ ...ref(s), kind: 'finish', text: summary });
-  const m = await mergeToMain(t.id);
-  if (m.ok) {
-    addStep({ ...ref(s), kind: 'merge', text: `Merged task/${t.id} into main`, commit: m.commit });
-    setTaskState(t.id, { status: 'done', note: undefined });
-    setSession(s.id, { state: 'done', summary });
-  } else if ((s.conflicts ?? 0) < 4 && await takeMain(t.id)) {
-    // Teammates' tasks changed the same lines: take main's version and let the agent put its own change back.
-    const files = m.files.join(', ') || 'some files';
-    s.conflicts = (s.conflicts ?? 0) + 1;
-    s.testOk = false;
-    addStep({ ...ref(s), kind: 'merge', text: `Merge conflict in ${files}: took main's version, the agent is re-applying its change` });
-    s.pending.push(`Your branch conflicted with main in ${files}: other tasks changed the same lines and were merged first. Main's version of those lines is now in your workspace, so parts of your work in ${files} are gone. Read each of those files, add back what this task needs while keeping the other tasks' code, run <test/>, then finish.`);
-    return;
-  } else {
-    const note = `Merge conflict in ${m.files.join(', ') || 'unknown files'}`;
+  const dir = worktreeDir(t.id);
+  const stuck = (note: string) => {
     setTaskState(t.id, { status: 'needs_review', note });
     setSession(s.id, { state: 'paused' });
     addStep({ ...ref(s), kind: 'error', text: `${note}; take over to resolve it` });
+    schedule();
+  };
+  const back = (note: string) => { s.testOk = false; s.pending.push(note); };
+
+  const sync = await syncMain(t.id).catch((e: Error) => e);
+  if (sync instanceof Error) return stuck(`Could not bring main into task/${t.id}: ${sync.message.slice(0, 200)}`);
+  if (sync.conflicts.length) {
+    s.conflicts = (s.conflicts ?? 0) + 1;
+    if (s.conflicts > 4) return stuck(`Merge conflicts in ${sync.conflicts.join(', ')} keep coming back`);
+    addStep({ ...ref(s), kind: 'merge', text: `Main changed the same lines in ${sync.conflicts.join(', ')}; the agent is resolving the conflict` });
+    return back(`Other tasks merged into main changed the same lines as you in ${sync.conflicts.join(', ')}. Main is now merged into your branch and those files contain conflict markers: the part between <<<<<<< and ======= is yours, the part between ======= and >>>>>>> is main's. Resolve every conflict with edit_file so both tasks' work is kept, remove all markers, run the whole test suite, then call finish again.\n\n${conflictHunks(dir, sync.conflicts)}`);
   }
+  const marked = listFiles(dir).filter((f) => hasMarkers(readFile(dir, f) ?? ''));
+  if (marked.length) return back(`These files still contain conflict markers: ${marked.join(', ')}. Resolve them, run the whole test suite, then finish.`);
+  if (sync.changed) {
+    // Main had new work from other tasks: the merged result must pass too.
+    const out = await perform(s, t, dir, { type: 'test' });
+    if (!s.testOk) return back(`Main had new work from other tasks, now merged into your branch, and the whole suite no longer passes. Fix it, run the tests, then finish.\n${out}`);
+  }
+  let reviewed = false;
+  if (reviewOn() && (s.reviews ?? 0) < 2) {
+    const r = await review(dir, t, taskState().get(t.id)?.lastTest ?? { passed: 0, failed: 0 }).catch((e: Error) => {
+      console.error(`Review of ${t.id} failed:`, e.message);
+      return { approve: true, issues: [] };
+    });
+    if (!r.approve) {
+      s.reviews = (s.reviews ?? 0) + 1;
+      addStep({ ...ref(s, 'reviewer'), kind: 'check', text: `Review: changes requested: ${r.issues.join(' ')}` });
+      return back(`A reviewer read your change before merging and asked for these fixes:\n${r.issues.map((i) => `- ${i}`).join('\n')}\nFix them, run the whole test suite, then call finish again.`);
+    }
+    reviewed = true;
+  }
+
+  addStep({ ...ref(s), kind: 'finish', text: summary });
+  const m = await mergeToMain(t.id);
+  if (!m.ok) {
+    // Another task merged in between: finishing again brings that in.
+    s.conflicts = (s.conflicts ?? 0) + 1;
+    if (s.conflicts > 4) return stuck(`Merge conflict in ${m.files.join(', ') || 'unknown files'}`);
+    return back('Main changed while you were finishing. Run the whole test suite, then call finish again.');
+  }
+  addStep({ ...ref(s), kind: 'merge', text: `${reviewed ? 'Reviewed and merged' : 'Merged'} task/${t.id} into main`, commit: m.commit });
+  setTaskState(t.id, { status: 'done', note: undefined });
+  setSession(s.id, { state: 'done', summary });
   schedule();
 }
 
@@ -583,7 +620,7 @@ async function giveToAgent(taskId: string, by: string, note: string, kind: 'hand
   } else if (note) {
     s.pending.push(`${by} handed this task to you. Their note: ${note}`);
   }
-  Object.assign(s, { testOk: false, takeoverBase: undefined, limit: s.stepCount + MAX_STEPS, bad: 0, errors: 0, conflicts: 0 });
+  Object.assign(s, { testOk: false, takeoverBase: undefined, limit: s.stepCount + MAX_STEPS, bad: 0, errors: 0, conflicts: 0, reviews: 0 });
   save(s);
   if (kind === 'handback') addStep({ ...ref(s, by), kind: 'handback', text: `${by} handed back to the agent${note ? `: ${note}` : ''}` });
   if (!t.deps.every(isDone)) {

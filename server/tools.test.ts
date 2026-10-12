@@ -44,6 +44,11 @@ test('OpenAI messages carry tool calls and tool results', () => {
   expect(out[3]).toEqual({ role: 'tool', tool_call_id: 'a', content: 'file' });
 });
 
+test('an empty assistant reply still has content for OpenAI', () => {
+  const out = toOpenAI('sys', [{ role: 'user', content: 'hi' }, { role: 'assistant', content: '' }, { role: 'user', content: 'go' }]);
+  expect(out[2].content).toBe('(no reply)');
+});
+
 test('partial tool input shows the file as it streams', () => {
   expect(partialFields('{"path":"src/a.js","content":"line 1\nline')).toEqual({ path: 'src/a.js', content: 'line 1\nline' });
   expect(partialFields('{"path":"src/a.js","content":"x\\u00')).toEqual({ path: 'src/a.js', content: 'x' });

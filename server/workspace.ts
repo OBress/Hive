@@ -118,17 +118,42 @@ export function mergeToMain(taskId: string): Promise<{ ok: true; commit: string 
   });
 }
 
-// Bring main into the task's branch so it can merge cleanly later. Where both changed the same lines, main's side
-// is kept; the agent then re-applies its own change on top.
-export function takeMain(taskId: string): Promise<boolean> {
+// Bring main into the task's branch before it merges, so the merge into main is clean and the agent sees other
+// tasks' work. Where both changed the same lines, the conflict markers are committed for the agent to resolve.
+export function syncMain(taskId: string): Promise<{ changed: boolean; conflicts: string[] }> {
   const dir = worktreeDir(taskId);
   return withRepoLock(async () => {
+    const before = await head(dir);
     try {
-      await git(dir, ['merge', '-X', 'theirs', '-m', `Merge main into task/${taskId}`, 'main'], HIVE);
-      return true;
-    } catch {
-      await git(dir, ['merge', '--abort']).catch(() => {});
-      return false;
+      await git(dir, ['merge', '--no-edit', '-m', `Merge main into task/${taskId}`, 'main'], HIVE);
+    } catch (e) {
+      const conflicts = (await git(dir, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')).split('\n').filter(Boolean);
+      if (!conflicts.length) { await git(dir, ['merge', '--abort']).catch(() => {}); throw e; }
+      await git(dir, ['add', '-A']);
+      await git(dir, ['commit', '--no-edit', '-m', `Merge main into task/${taskId} (conflicts to resolve)`], HIVE);
+      return { changed: true, conflicts };
     }
+    return { changed: (await head(dir)) !== before, conflicts: [] };
   });
+}
+
+export const hasMarkers = (text: string) => /^<{7}( |$)/m.test(text) && /^>{7}( |$)/m.test(text);
+
+// Each conflict region with a little context, for the agent: "path:line" then the lines.
+export function conflictHunks(dir: string, files: string[], max = 8000): string {
+  const out: string[] = [];
+  for (const f of files) {
+    const lines = (readFile(dir, f) ?? '').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!/^<{7}/.test(lines[i])) continue;
+      let j = i;
+      while (j < lines.length && !/^>{7}/.test(lines[j])) j++;
+      const from = Math.max(0, i - 2);
+      const to = Math.min(lines.length, j + 3);
+      out.push(`${f}:${i + 1}\n${lines.slice(from, to).join('\n')}`);
+      i = j;
+    }
+  }
+  const text = out.join('\n\n');
+  return text.length > max ? `${text.slice(0, max)}\n…(more conflicts trimmed; read the files)` : text;
 }

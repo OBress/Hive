@@ -63,6 +63,7 @@ function fakeAgent(messages: Msg[]): { text: string; calls: ToolCall[] } {
 
 function fakePlanner(system: string, messages: Msg[]): string {
   const last = messages[messages.length - 1]?.content ?? '';
+  if (/reviewing one task's change/.test(system)) return JSON.stringify({ approve: true, issues: [] });
   if (/running the goal check/.test(system)) {
     const failing = /^Tests on main: \d+ passed, ([1-9]\d*) failed/m.test(last);
     return JSON.stringify(failing

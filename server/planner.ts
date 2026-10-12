@@ -77,6 +77,9 @@ Reply with strict JSON only, no prose around it:
   {"op":"removeTask","id":"..."}
   {"op":"addDep","from":"a","to":"b"}   (b depends on a)
   {"op":"removeDep","from":"a","to":"b"}
+  Tasks run in parallel on separate branches, so give each task its own files and name them in its spec (its module
+  under src/ and its test file test/<id>.test.js). When two tasks must change the same file (a shared index.html,
+  a router, a main entry point), make the later one depend on the earlier so they never edit it at the same time.
   Add "ask": true to a task (in addTask's task or updateTask's fields) when it deploys, deletes data, spends money
   or touches accounts outside the workspace: in Semi-auto it then waits for a person's OK.
 - Two more ops control running, only when the person asks for it:

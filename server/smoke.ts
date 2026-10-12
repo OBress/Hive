@@ -151,7 +151,7 @@ try {
 
   const s = await until('all tasks done', (st) => Object.values(st.taskState).every((t) => t.status === 'done') && st, 90000);
   check('all four tasks are done', Object.keys(s.taskState).length === 4);
-  const goal = await until('goal check', (st) => st.steps.find((x) => x.kind === 'check'), 60000);
+  const goal = await until('goal check', (st) => st.steps.find((x) => x.kind === 'check' && !x.taskId), 60000);
   check('when every task is done, the goal check tests main and reports', !!goal.test && goal.test.failed === 0 && goal.test.passed > 0, goal.text);
 
   const approve = await call('POST', '/approve', { by: 'Ana' });

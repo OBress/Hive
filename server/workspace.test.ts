@@ -1,5 +1,8 @@
 import { expect, test } from 'vitest';
-import { safePath } from './workspace.ts';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { conflictHunks, hasMarkers, safePath } from './workspace.ts';
 
 test('safePath allows src/ and test/ files', () => {
   expect(safePath('src/store.js')).toBe('src/store.js');
@@ -19,4 +22,15 @@ test('safePath allows reading package.json and README.md, never writing them', (
   expect(safePath('src/a.js', true)).toBe('src/a.js');
   for (const p of ['package.json', 'README.md']) expect(safePath(p)).toBeNull();
   for (const p of ['.env', '.git/config', '../package.json', 'src/../.env', 'node_modules/x/package.json']) expect(safePath(p, true)).toBeNull();
+});
+
+test('conflict regions are shown with their location and markers are detected', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hive-conflict-'));
+  mkdirSync(join(dir, 'src'));
+  const text = 'a\nb\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> main\nc\nd\ne\n';
+  writeFileSync(join(dir, 'src', 'x.js'), text);
+  expect(hasMarkers(text)).toBe(true);
+  expect(hasMarkers('a <<<<<<< b')).toBe(false);
+  expect(conflictHunks(dir, ['src/x.js'])).toBe('src/x.js:3\na\nb\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> main\nc\nd');
+  rmSync(dir, { recursive: true, force: true });
 });

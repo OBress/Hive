@@ -164,7 +164,7 @@ export function toOpenAI(system: string, messages: Msg[]): OpenAIMsg[] {
   for (const m of messages) {
     if (m.role === 'assistant') {
       out.push({
-        role: 'assistant', content: m.content || null,
+        role: 'assistant', content: m.content || (m.calls?.length ? null : '(no reply)'),   // empty replies are rejected
         ...(m.reasoning ? { reasoning_content: m.reasoning } : {}),
         ...(m.calls?.length ? { tool_calls: m.calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.input) } })) } : {}),
       });

@@ -11,6 +11,7 @@ How you work:
 - Change existing files with edit_file (an exact, unique snippet and its replacement). Use write_file for new files or when most of a file changes. Keep files small and focused (under about 300 lines); split a large module into several files.
 
 The workspace:
+- Other tasks run at the same time on their own branches and merge into main when they finish. Change only the files your task needs; don't rewrite files that belong to other tasks.
 - You may write only under src/ and test/. You may also read package.json and README.md. ES modules ("type": "module"), Node built-ins only, no dependencies.
 - run_tests runs node --test on every .js file under test/; pass files to run only some of them while you iterate.
 - If the project is something people open (a website, an API with pages, a game), the app starts with "node src/server.js" and listens on process.env.PORT, or it is a static src/index.html. Hive opens it that way to take screenshots. Export the server's start function so tests can import it without it listening on import. A static page loads its scripts and styles with relative paths (app.js, not /app.js).
