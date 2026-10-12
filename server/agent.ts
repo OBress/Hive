@@ -162,12 +162,10 @@ export const isTestFile = (f: string) => /^test\/.*\.js$/.test(f) || f.endsWith(
 export interface AgentContext {
   task: { id: string; title: string; spec: string };
   deps: { title: string; spec: string; summary: string }[];
-  files: string[];
-  lastTest?: { passed: number; failed: number };
-  summary: string;
   stack?: string;                     // the project's approved stack / spec doc
 }
 
+// The first message of every request. It changes only when the task does, so providers cache everything after it.
 export function contextText(c: AgentContext): string {
   return [
     `Task id: ${c.task.id}`,
@@ -175,19 +173,23 @@ export function contextText(c: AgentContext): string {
     `Spec: ${c.task.spec}`,
     c.stack ? `Project stack and spec (follow it where it applies to this task):\n${c.stack}` : '',
     c.deps.length ? `Finished dependencies (their code is in the workspace):\n${c.deps.map((d) => `- ${d.title}: ${d.spec}\n  Summary: ${d.summary || 'none'}`).join('\n')}` : '',
-    `Files in the workspace: ${c.files.join(', ') || 'none'}`,
-    `Test files run_tests will run: ${c.files.filter(isTestFile).join(', ') || 'none'}`,
-    `Last test run: ${c.lastTest ? `${c.lastTest.passed} passed, ${c.lastTest.failed} failed` : 'none yet'}`,
-    c.summary ? `Summary of this session so far:\n${c.summary}` : '',
   ].filter(Boolean).join('\n\n');
 }
 
-// The context message, then the last 16 transcript messages, alternating and ending with a user message.
-// Tool results whose calls fell out of the window become plain text, so every call still has its answer.
+// The workspace as it is now, sent with each new user message (and kept in the transcript, so history never changes).
+export function stateText(files: string[], lastTest?: { passed: number; failed: number }): string {
+  return [
+    `Files in the workspace: ${files.join(', ') || 'none'}`,
+    `Test files run_tests will run: ${files.filter(isTestFile).join(', ') || 'none'}`,
+    `Last test run: ${lastTest ? `${lastTest.passed} passed, ${lastTest.failed} failed` : 'none yet'}`,
+  ].join('\n');
+}
+
+// The context message, then the transcript. Consecutive plain user messages merge; tool results whose calls are no
+// longer in the transcript (older sessions were trimmed) become plain text, so every call still has its answer.
 export function buildMessages(context: string, transcript: Msg[]): Msg[] {
-  const window = transcript.slice(-16);
   const out: Msg[] = [{ role: 'user', content: context }];
-  for (const [i, m] of window.entries()) {
+  for (const [i, m] of transcript.entries()) {
     const orphan = i === 0 && m.role === 'user' && m.results?.length;
     const msg: Msg = orphan ? { role: 'user', content: [...m.results!.map((r) => r.content), m.content].filter(Boolean).join('\n\n') } : { ...m };
     const last = out[out.length - 1];
@@ -196,4 +198,31 @@ export function buildMessages(context: string, transcript: Msg[]): Msg[] {
   }
   if (out[out.length - 1].role !== 'user') out.push({ role: 'user', content: 'Continue.' });
   return out;
+}
+
+const msgSize = (m: Msg) => m.content.length + (m.results ?? []).reduce((n, r) => n + r.content.length, 0)
+  + (m.calls ?? []).reduce((n, c) => n + JSON.stringify(c.input).length, 0) + (m.reasoning?.length ?? 0);
+
+// Keep a long session within budget without rewriting history every turn: once the transcript passes `budget`
+// characters, older tool results and file bodies are shortened in one go (so the cached prefix is stable again
+// until the next time). Thinking blocks are dropped everywhere then, since they are only valid on unedited history.
+// Returns whether it changed anything.
+export function compact(transcript: Msg[], budget: number, keep = 12): boolean {
+  const size = transcript.reduce((n, m) => n + msgSize(m), 0);
+  if (size <= budget) return false;
+  const cut = Math.max(0, transcript.length - keep);
+  const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)} …(${s.length - n} more characters elided to save space; read the file again if you need it)` : s);
+  for (const [i, m] of transcript.entries()) {
+    delete m.raw; delete m.rawModel; delete m.reasoning;
+    if (i >= cut) continue;
+    m.content = short(m.content, 1500);
+    for (const r of m.results ?? []) { r.content = short(r.content, 300); delete r.images; }
+    for (const c of m.calls ?? []) {
+      for (const k of ['content', 'old_string', 'new_string']) {
+        const v = c.input[k];
+        if (typeof v === 'string' && v.length > 200) c.input[k] = `(${v.length} characters, elided)`;
+      }
+    }
+  }
+  return true;
 }

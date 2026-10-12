@@ -1,14 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AutonomyMode, Owner, TaskSpec, TaskState } from '@hive/shared/types';
-import { AGENT_SYSTEM, TOOLS, applyEdit, buildMessages, contextText, isTestFile, parseAction, planOf, toAction, type Action } from './agent.ts';
+import {
+  AGENT_SYSTEM, TOOLS, applyEdit, buildMessages, compact, contextText, isTestFile, parseAction, planOf, stateText, toAction, type Action,
+} from './agent.ts';
 import {
   addChat, addStep, HttpError, live, openTerminal, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks,
   terminal, trim,
 } from './doc.ts';
 import { AGENT, personAuthor, type GitUser } from './git.ts';
 import { autoStartable, readyTasks, waitingForOk } from './graph.ts';
-import { agentMaxTokens, generateTurn, models, type Msg, type ToolCall, type ToolResult, type Turn } from './llm.ts';
+import { agentMaxTokens, contextBudget, generateTurn, models, type Msg, type ToolCall, type ToolResult, type Turn } from './llm.ts';
 import { saveTranscript } from './history.ts';
 import { openCodeOn, search } from './opencode.ts';
 import { current, currentId, inProject, sessionsDir, workspaceDir } from './projects.ts';
@@ -227,12 +229,18 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
   s.pending.push(...s.steers.splice(0));
   const results = (s.results ??= []).splice(0);
   const notes = s.pending.splice(0);
-  const userMsg: Msg = { role: 'user', content: notes.join('\n\n') || (results.length ? '' : 'Continue.'), ...(results.length ? { results } : {}) };
+  const dir = worktreeDir(t.id);
+  const state = stateText(listFiles(dir), taskState().get(t.id)?.lastTest);
+  const userMsg: Msg = { role: 'user', content: [...notes, state].join('\n\n'), ...(results.length ? { results } : {}) };
   s.transcript.push(userMsg);
   const putBack = () => { s.transcript.pop(); s.pending.unshift(...notes); s.results!.unshift(...results); save(s); };
 
-  const dir = worktreeDir(t.id);
-  const messages = buildMessages(contextText(contextFor(t, s, dir)), s.transcript);
+  // History is append-only so the provider's prompt cache keeps hitting; it is shortened only when it grows too big.
+  if (compact(s.transcript, contextBudget())) {
+    const summary = sessions().get(s.id)?.summary;
+    if (summary) userMsg.content = `Older steps were shortened to save space. Summary of the session so far:\n${summary}\n\n${userMsg.content}`;
+  }
+  const messages = buildMessages(contextText(contextFor(t)), s.transcript);
   const view = liveView(sid);
   let reply: Turn;
   try {
@@ -348,15 +356,10 @@ export function partialFields(json: string): Record<string, string> {
   return out;
 }
 
-function contextFor(t: TaskSpec, s: SessionData, dir: string) {
+function contextFor(t: TaskSpec) {
   const deps = t.deps.map((id) => tasks().get(id)).filter((d): d is TaskSpec => !!d && isDone(d.id))
     .map((d) => ({ title: d.title, spec: d.spec, summary: sessions().get(taskState().get(d.id)?.sessionId ?? '')?.summary ?? '' }));
-  return {
-    task: t, deps, files: listFiles(dir),
-    lastTest: taskState().get(t.id)?.lastTest,
-    summary: sessions().get(s.id)?.summary ?? '',
-    stack: current().stack,
-  };
+  return { task: t, deps, stack: current().stack };
 }
 
 // Ground truth after each action, so the agent never relies on files it only planned to write.

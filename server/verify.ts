@@ -101,7 +101,7 @@ async function checkGoal(all: Record<string, TaskSpec>, semi: boolean) {
   ].filter(Boolean).join('\n\n');
 
   const text = await generate({
-    model: vision || models.planner, system: CHECK_SYSTEM, maxTokens: 2000,
+    model: vision || models.planner, system: CHECK_SYSTEM, maxTokens: 8000, json: true,
     messages: [{ role: 'user', content, images: vision && shot.ok ? [readFileSync(shot.file).toString('base64')] : undefined }],
   });
   const out = (extractJson(text) ?? {}) as { done?: unknown; reply?: unknown; ops?: unknown };

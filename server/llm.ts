@@ -27,6 +27,8 @@ export interface GenerateOptions {
   onToolInput?: (index: number, name: string, json: string) => void;   // a call's input JSON so far
   signal?: AbortSignal;
   maxTokens?: number;
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';   // Claude: how hard to think (default high)
+  json?: boolean;                     // the reply must be one JSON object (JSON mode where the provider has it)
 }
 export type Stop = 'end' | 'tool' | 'length' | 'refusal';
 export interface Turn { text: string; calls: ToolCall[]; stop: Stop; raw?: unknown[]; reasoning?: string }
@@ -51,8 +53,8 @@ export async function initModels() {
     models.planner ||= 'fake-planner';
   } else if (provider === 'anthropic') {
     if (!process.env.ANTHROPIC_API_KEY) configError = 'Set ANTHROPIC_API_KEY in .env (or LLM_PROVIDER=fake).';
-    models.agent ||= 'claude-sonnet-5-5';
-    models.planner ||= 'claude-haiku-5-5';
+    models.agent ||= 'claude-opus-5-5';
+    models.planner ||= 'claude-opus-5-5';
   } else if (!baseUrl() || !process.env.LLM_API_KEY) {
     configError = 'Set LLM_BASE_URL and LLM_API_KEY in .env (or LLM_PROVIDER=fake for scripted agents).';
   } else {
@@ -71,7 +73,19 @@ export async function initModels() {
 
 // Agent replies carry whole files (plus any reasoning), so they get far more room than planner calls.
 // OpenAI-compatible providers often cap output at 8192; raise AGENT_MAX_TOKENS if yours allows more.
-export const agentMaxTokens = () => Number(process.env.AGENT_MAX_TOKENS) || (provider === 'anthropic' ? 32000 : 8192);
+export const agentMaxTokens = () => Number(process.env.AGENT_MAX_TOKENS) || (provider === 'anthropic' ? 64000 : 8192);
+
+// How many characters of transcript an agent keeps before older steps are shortened (agent.ts compact()).
+// Claude has a 1M-token window and clears old tool results server-side, so it gets far more room.
+export const contextBudget = () => Number(process.env.AGENT_CONTEXT_CHARS) || (provider === 'anthropic' ? 1_500_000 : 300_000);
+
+// Extra JSON merged into every OpenAI-compatible request body, e.g. {"reasoning_effort":"high"} or a provider's
+// switch for thinking mode. Read once; a bad value is reported and ignored.
+const extraBody = (() => {
+  try { return JSON.parse(process.env.LLM_EXTRA_BODY || '{}') as Record<string, unknown>; }
+  catch { console.error('LLM_EXTRA_BODY is not valid JSON; ignoring it'); return {}; }
+})();
+let jsonMode = true;   // turned off if the provider rejects response_format
 
 // A small semaphore so we never run more than MAX_PARALLEL + 1 calls at once.
 const limit = Number(process.env.MAX_PARALLEL || 2) + 1;
@@ -163,18 +177,26 @@ export function toOpenAI(system: string, messages: Msg[]): OpenAIMsg[] {
 }
 
 async function openaiTurn(o: GenerateOptions): Promise<Turn> {
+  const json = o.json && jsonMode;
   const res = await fetch(`${baseUrl()}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.LLM_API_KEY}` },
     body: JSON.stringify({
+      ...extraBody,
       model: o.model, stream: true, max_tokens: o.maxTokens ?? 4096,
       messages: toOpenAI(o.system, o.messages),
       ...(o.tools?.length ? { tools: o.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.schema } })) } : {}),
+      ...(json ? { response_format: { type: 'json_object' } } : {}),
     }),
     signal: o.signal,
   });
   if (!res.ok || !res.body) {
     const body = (await res.text().catch(() => '')).slice(0, 300);
+    if (json && res.status === 400 && /response_format|json/i.test(body)) {
+      jsonMode = false;
+      console.log('The provider rejected JSON mode; planner replies are parsed from plain text instead');
+      return openaiTurn(o);
+    }
     throw Object.assign(new Error(`LLM HTTP ${res.status}: ${body}`), { status: res.status });
   }
   const decoder = new TextDecoder();
@@ -243,18 +265,32 @@ function toAnthropic(messages: Msg[], model: string): Anthropic.MessageParam[] {
   });
 }
 
+// Current Claude models think adaptively and take an effort level; older ones (if configured) get neither.
+const adaptive = (model: string) => /^claude-(opus|sonnet|haiku|fable|mythos)-(5|4-[6-9])/.test(model);
+// Models that accept server-side refusal fallbacks ("default" routes by refusal category).
+const withFallbacks = (model: string) => /^claude-(opus-5-5|opus-5|sonnet-5-5|fable-5-1)$/.test(model);
+
 async function anthropicTurn(o: GenerateOptions): Promise<Turn> {
   anthropic ??= new Anthropic();
-  const stream = anthropic.messages.stream(
-    {
-      model: o.model, system: o.system, max_tokens: o.maxTokens ?? 4096,
-      messages: toAnthropic(o.messages, o.model),
-      ...(o.tools?.length ? {
-        tools: o.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema, eager_input_streaming: true })),
-      } : {}),
-    },
-    { signal: o.signal },
-  );
+  const betas = ['context-management-2025-06-27'];
+  const tools = o.tools?.length;
+  if (withFallbacks(o.model)) betas.push('server-side-fallback-2026-07-01');
+  const params = {
+    model: o.model, max_tokens: o.maxTokens ?? 4096, betas,
+    // Prompt caching: the system prompt (and the tools before it) is a fixed breakpoint; the top-level breakpoint
+    // moves to the end of the conversation, so each turn reuses everything the last one sent.
+    system: [{ type: 'text' as const, text: o.system, cache_control: { type: 'ephemeral' as const } }],
+    cache_control: { type: 'ephemeral' as const },
+    messages: toAnthropic(o.messages, o.model) as Anthropic.Beta.BetaMessageParam[],
+    ...(adaptive(o.model) ? { thinking: { type: 'adaptive' as const, display: 'summarized' as const }, output_config: { effort: o.effort ?? 'high' } } : {}),
+    ...(withFallbacks(o.model) ? { fallbacks: 'default' as const } : {}),
+    ...(tools ? {
+      tools: o.tools!.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema, eager_input_streaming: true })),
+      // Old tool results are cleared server-side once the context grows, instead of rewriting history here.
+      context_management: { edits: [{ type: 'clear_tool_uses_20250919' as const }] },
+    } : {}),
+  };
+  const stream = anthropic.beta.messages.stream(params, { signal: o.signal });
   const json: string[] = [];
   const names: string[] = [];
   stream.on('streamEvent', (ev) => {
@@ -265,7 +301,7 @@ async function anthropicTurn(o: GenerateOptions): Promise<Turn> {
     } else if (ev.type === 'content_block_delta' && ev.delta.type === 'thinking_delta') o.onReasoning?.(ev.delta.thinking);
   });
   stream.on('text', (d) => o.onToken?.(d));
-  let msg: Anthropic.Message;
+  let msg: Anthropic.Beta.BetaMessage;
   try {
     msg = await stream.finalMessage();
   } catch (e) {
@@ -274,12 +310,14 @@ async function anthropicTurn(o: GenerateOptions): Promise<Turn> {
     throw Object.assign(new Error(`a tool input could not be parsed: ${(e as Error).message}`), { badReply: true });
   }
   const cut = msg.stop_reason === 'max_tokens';
-  const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('');
-  const blocks = msg.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+  const text = msg.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
+  const blocks = msg.content.flatMap((b) => (b.type === 'tool_use' ? [b] : []));
   const calls = blocks.map((b, i): ToolCall => {
     const input = (b.input && typeof b.input === 'object' ? b.input : {}) as Record<string, unknown>;
     return { id: b.id, name: b.name, input, bad: cut && i === blocks.length - 1 ? 'the reply hit the output limit in the middle of this call' : undefined };
   });
   const stop: Stop = cut ? 'length' : msg.stop_reason === 'refusal' ? 'refusal' : calls.length ? 'tool' : 'end';
-  return { text, calls, stop, raw: msg.content as unknown[] };
+  // Replay the reply unchanged (thinking blocks are bound to it), unless another model served it after a refusal.
+  const replay = !msg.content.some((b) => (b.type as string) === 'fallback');
+  return { text, calls, stop, raw: replay ? (msg.content as unknown[]) : undefined };
 }

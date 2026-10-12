@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { applyEdit, buildMessages, toAction } from './agent.ts';
+import { applyEdit, buildMessages, compact, toAction } from './agent.ts';
 import { toOpenAI } from './llm.ts';
 import { partialFields } from './session.ts';
 
@@ -47,4 +47,17 @@ test('OpenAI messages carry tool calls and tool results', () => {
 test('partial tool input shows the file as it streams', () => {
   expect(partialFields('{"path":"src/a.js","content":"line 1\nline')).toEqual({ path: 'src/a.js', content: 'line 1\nline' });
   expect(partialFields('{"path":"src/a.js","content":"x\\u00')).toEqual({ path: 'src/a.js', content: 'x' });
+});
+
+test('a transcript over budget is shortened once, keeping recent steps whole', () => {
+  const big = 'x'.repeat(5000);
+  const t = Array.from({ length: 30 }, (_, i) => i % 2
+    ? { role: 'assistant' as const, content: 'go', calls: [{ id: `c${i}`, name: 'write_file', input: { path: 'src/a.js', content: big } }], raw: [{}], rawModel: 'm' }
+    : { role: 'user' as const, content: 'state', results: i ? [{ id: `c${i - 1}`, content: big }] : undefined });
+  expect(compact(t, 1_000_000)).toBe(false);
+  expect(compact(t, 50_000)).toBe(true);
+  expect(t[1].calls![0].input.content).toBe('(5000 characters, elided)');
+  expect(t[2].results![0].content.length).toBeLessThan(500);
+  expect(t[29].calls![0].input.content).toBe(big);
+  expect(t.some((m) => 'raw' in m)).toBe(false);
 });

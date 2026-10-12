@@ -28,7 +28,7 @@ export async function summarize(taskId: string): Promise<{ summary: string; step
   if (!recent.length) return { summary: sessions().get(sid ?? '')?.summary || 'Done: nothing yet.\nLeft: everything.\nTried and failed: nothing.\nOpen questions: none.', stepIds: [] };
   const log = recent.map((s) => `[${s.id}] ${kind(s)} by ${s.by}: ${s.text}${s.path ? ` (${s.path})` : ''}`).join('\n');
   const text = await generate({
-    model: models.planner, system: SUMMARY_SYSTEM, maxTokens: 600,
+    model: models.planner, system: SUMMARY_SYSTEM, maxTokens: 2000, effort: 'low',
     messages: [{ role: 'user', content: `Task ${t.id} "${t.title}": ${t.spec}\n\nSteps:\n${log}` }],
   });
   const summary = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
@@ -60,7 +60,7 @@ Up to three assumptions you made that the person may want to change.`;
 // A first draft of a project's stack / spec doc. The person reviews and edits it before the project is created.
 export async function stackDoc(name: string, goal: string, notes: string): Promise<string> {
   const text = await generate({
-    model: models.planner, system: STACK_SYSTEM, maxTokens: 2500,
+    model: models.planner, system: STACK_SYSTEM, maxTokens: 8000,
     messages: [{ role: 'user', content: `Project: ${name}\nGoal: ${goal || '(none given)'}${notes ? `\nWhat they want changed in the last draft: ${notes}` : ''}` }],
   });
   return text.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/^```(?:markdown|md)?\n([\s\S]*?)\n```\s*$/, '$1').trim();
@@ -182,10 +182,10 @@ export async function chat(from: string, text: string) {
     const modeLine = `Mode: ${MODE_NAMES[mode]}${project.modeSetBy ? ` (set by ${project.modeSetBy})` : ' (the default)'}`;
     const messages: Msg[] = [{ role: 'user', content: `Project: ${project.name}${project.goal ? ` (goal: ${project.goal})` : ''}\n${modeLine}${project.stack ? `\n\nApproved stack and spec (plan tasks that follow it):\n${project.stack}` : ''}\n\nTasks:\n${graph || '(none)'}\n\nRecent steps:\n${ordered.map(line).join('\n') || '(none)'}\n\n${from} asks: ${text}` }];
 
-    let out = extractJson(await generate({ model: models.planner, system: PLANNER_SYSTEM, messages, maxTokens: 2000 }));
+    let out = extractJson(await generate({ model: models.planner, system: PLANNER_SYSTEM, messages, maxTokens: 8000, json: true }));
     if (!out) {
       messages.push({ role: 'assistant', content: '(invalid)' }, { role: 'user', content: 'That was not valid JSON. Reply with only {"reply": "...", "ops": [], "cites": []}.' });
-      out = extractJson(await generate({ model: models.planner, system: PLANNER_SYSTEM, messages, maxTokens: 2000 }));
+      out = extractJson(await generate({ model: models.planner, system: PLANNER_SYSTEM, messages, maxTokens: 8000, json: true }));
     }
     if (!out) throw new Error('the planner did not return valid JSON');
 
