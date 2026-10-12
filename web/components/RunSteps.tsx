@@ -48,7 +48,7 @@ export default function RunSteps({ task, run }: { task: Task; run?: TaskRun }) {
       <div key={`${current}-${state}`} className="hv-steps__now">
         <span className="hv-steps__count">{state === 'done' ? `${steps.length}/${steps.length}` : `${shown + 1}/${steps.length}`}</span>
         <span className="hv-steps__label">{label}</span>
-        <span className="hv-steps__state">{CAPTION[state]}</span>
+        <span className="hv-steps__state">{state === 'blocked' && !/conflict/i.test(run?.note ?? '') ? 'Paused' : CAPTION[state]}</span>
       </div>
     </div>
   );

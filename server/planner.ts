@@ -78,6 +78,8 @@ Reply with strict JSON only, no prose around it:
   {"op":"removeTask","id":"..."}
   {"op":"addDep","from":"a","to":"b"}   (b depends on a)
   {"op":"removeDep","from":"a","to":"b"}
+  The workspace already has package.json ("type": "module") and test/ set up; never make a task to create or edit
+  package.json, project config or scripts. Agents add npm packages themselves with install_packages.
   Tasks run in parallel on separate branches, so give each task its own files and name them in its spec (its module
   under src/ and its test file test/<id>.test.js). When two tasks must change the same file (a shared index.html,
   a router, a main entry point), make the later one depend on the earlier so they never edit it at the same time.

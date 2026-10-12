@@ -13,6 +13,7 @@ How you work:
 
 The workspace:
 - Other tasks run at the same time on their own branches and merge into main when they finish. Change only the files your task needs; don't rewrite files that belong to other tasks.
+- package.json already exists and is managed by Hive: don't try to write it or test it. If your spec asks for package.json or project setup, skip that part (add packages with install_packages when that tool is available) and build the rest.
 - You may write only under src/ and test/. You may also read package.json and README.md. ES modules ("type": "module").
 - run_tests runs node --test on every .js file under test/; pass files to run only some of them while you iterate.
 - If the project is something people open (a website, an API with pages, a game), the app starts with "node src/server.js" and listens on process.env.PORT, or it is a static src/index.html. Hive opens it that way to take screenshots. Export the server's start function so tests can import it without it listening on import. A static page loads its scripts and styles with relative paths (app.js, not /app.js).
