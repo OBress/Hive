@@ -10,7 +10,8 @@ export const getDoc = (): Y.Doc => projectDoc();
 export const tasks = () => getDoc().getMap<TaskSpec>(MAPS.tasks);
 export const taskState = () => getDoc().getMap<TaskState>(MAPS.taskState);
 export const sessions = () => getDoc().getMap<SessionView>(MAPS.sessions);
-export const live = () => getDoc().getMap<string>(MAPS.live);
+// Each value is a Y.Text the server appends to as the agent writes (browsers read it as a string via toJSON).
+export const live = () => getDoc().getMap<Y.Text | string>(MAPS.live);
 export const terminal = () => getDoc().getMap<TerminalView>(MAPS.terminal);
 export const steps = () => getDoc().getArray<Step>(ARRAYS.steps);
 export const chat = () => getDoc().getArray<ChatMessage>(ARRAYS.chat);

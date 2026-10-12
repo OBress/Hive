@@ -6,7 +6,7 @@ import { MAPS, SERVER_PORT, type Project, type TaskSpec } from '@hive/shared/typ
 import { authMiddleware, initAuth, wsAuthenticate } from './auth.ts';
 import { serverWrite, syncTaskStates } from './doc.ts';
 import { initModels } from './llm.ts';
-import { initMirror } from './history.ts';
+import { initMirror, flushTranscripts } from './history.ts';
 import { DATA_DIR } from './paths.ts';
 import {
   createProject, updateProject, docFile, getProject, inProject, loadedDocs, loadProjects, registryExists, setCloser, setOpener, setProjectDoc,
@@ -128,6 +128,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     clearInterval(saver);
     for (const id of loadedDocs().keys()) dirty.add(id);
+    flushTranscripts();
     void Promise.allSettled([saveAll(), flushSessionsDb(), disposeSandbox()]).finally(() => process.exit(0));
   });
 }

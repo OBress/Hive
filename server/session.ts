@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as Y from 'yjs';
 import type { AutonomyMode, Owner, TaskSpec, TaskState } from '@hive/shared/types';
 import {
   agentSystem, agentTools, applyEdit, buildMessages, compact, contextText, isTestFile, parseAction, planOf, stateText, toAction, type Action,
@@ -25,7 +26,7 @@ import {
   commitAll, diff, ensureWorktree, head, listFiles, conflictHunks, hasMarkers, mergeToMain, readFile, safePath, searchFiles, syncMain, worktreeDir, writeFile,
 } from './workspace.ts';
 
-const MAX_PARALLEL = Number(process.env.MAX_PARALLEL || 2);
+const MAX_PARALLEL = Number(process.env.MAX_PARALLEL || 4);
 const MAX_STEPS = Number(process.env.MAX_STEPS || 60);
 const AGENT_OWNER: Owner = { kind: 'agent', name: 'agent' };
 
@@ -340,7 +341,22 @@ function liveView(sid: string) {
     text.trim(),
     ...calls.filter(Boolean).map((c) => liveCall(c.name, partialFields(c.json))),
   ].filter(Boolean).join('\n\n');
-  const flush = () => { last = Date.now(); timer = undefined; serverWrite(() => live().set(sid, render())); };
+  // Only the change since the last flush goes over the wire: usually an append at the end.
+  let shown = '';
+  let doc: Y.Text | null = null;
+  const flush = () => {
+    last = Date.now();
+    timer = undefined;
+    const next = render();
+    serverWrite(() => {
+      if (!doc || live().get(sid) !== doc) { doc = new Y.Text(); live().set(sid, doc); shown = ''; }
+      let p = 0;
+      while (p < shown.length && p < next.length && shown.charCodeAt(p) === next.charCodeAt(p)) p++;
+      if (shown.length > p) doc.delete(p, shown.length - p);
+      if (next.length > p) doc.insert(p, next.slice(p));
+    });
+    shown = next;
+  };
   const tick = () => { if (Date.now() - last >= 150) flush(); else timer ??= setTimeout(flush, 150 - (Date.now() - last)); };
   return {
     text: (d: string) => { text += d; tick(); },

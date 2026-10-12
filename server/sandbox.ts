@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { DATA_DIR } from './paths.ts';
 import { listFiles } from './workspace.ts';
 
@@ -102,13 +103,19 @@ async function sync(b: Box, dir: string): Promise<string> {
   b.synced.set(name, have);
   const files = ['package.json', ...(existsSync(join(dir, 'package-lock.json')) ? ['package-lock.json'] : []), ...listFiles(dir)];
   const pkgBefore = have.get('package.json');
-  await Promise.all(files.map(async (rel) => {
-    const content = readFileSync(join(dir, rel), 'utf8');
-    if (have.get(rel) === content) return;
-    await call(`${b.toolbox}/files/upload-v2?path=${encodeURIComponent(`${remote}/${rel}`)}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: content });
-    have.set(rel, content);
-  }));
+  const changed = files.map((rel) => ({ rel, content: readFileSync(join(dir, rel), 'utf8') })).filter((f) => have.get(f.rel) !== f.content);
+  if (changed.length > 3) {
+    // Many files (a fresh task, a merge from main): one gzipped tar and one extract instead of a request per file.
+    const archive = `${b.root}/.sync-${name}.tgz`;
+    await call(`${b.toolbox}/files/upload-v2?path=${encodeURIComponent(archive)}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: gzipSync(tar(changed.map((f) => ({ path: f.rel, content: f.content })))) });
+    const r = await exec(b, `sh -c 'mkdir -p "${remote}" && tar xzf "${archive}" -C "${remote}" && rm -f "${archive}"'`, undefined, 60);
+    if (r.exitCode !== 0) throw new Error(`could not unpack files in the sandbox: ${r.output.slice(0, 200)}`);
+  } else {
+    await Promise.all(changed.map((f) => call(`${b.toolbox}/files/upload-v2?path=${encodeURIComponent(`${remote}/${f.rel}`)}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f.content })));
+  }
+  for (const f of changed) have.set(f.rel, f.content);
   for (const rel of [...have.keys()].filter((r) => !files.includes(r))) {
     await call(`${b.toolbox}/files?path=${encodeURIComponent(`${remote}/${rel}`)}`, { method: 'DELETE' }).catch(() => {});
     have.delete(rel);
@@ -178,4 +185,41 @@ export async function sandboxServe(dir: string, rev: string): Promise<string> {
     s.until = Date.now() + 50 * 60 * 1000;
   }
   return s.url;
+}
+
+// A plain ustar archive of text files (no dependency): a 512-byte header per file, the content padded to 512 bytes,
+// then two empty blocks. Long paths use the ustar prefix field.
+export function tar(files: { path: string; content: string }[]): Buffer {
+  const blocks: Buffer[] = [];
+  const now = Math.floor(Date.now() / 1000);
+  for (const f of files) {
+    const body = Buffer.from(f.content, 'utf8');
+    const h = Buffer.alloc(512);
+    let name = f.path;
+    let prefix = '';
+    if (Buffer.byteLength(name) > 100) {
+      const cut = name.lastIndexOf('/', name.length - 1 - Math.max(0, Buffer.byteLength(name) - 100 - 1));
+      prefix = name.slice(0, cut);
+      name = name.slice(cut + 1);
+    }
+    const put = (text: string, at: number, len: number) => h.write(text, at, len, 'utf8');
+    const oct = (n: number, len: number) => `${n.toString(8).padStart(len - 1, '0')}\0`;
+    put(name, 0, 100);
+    put(oct(0o644, 8), 100, 8);
+    put(oct(0, 8), 108, 8);
+    put(oct(0, 8), 116, 8);
+    put(oct(body.length, 12), 124, 12);
+    put(oct(now, 12), 136, 12);
+    put('        ', 148, 8);
+    put('0', 156, 1);
+    put('ustar\0', 257, 6);
+    put('00', 263, 2);
+    put(prefix, 345, 155);
+    let sum = 0;
+    for (const byte of h) sum += byte;
+    put(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8);
+    blocks.push(h, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return Buffer.concat(blocks);
 }

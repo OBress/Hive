@@ -31,12 +31,15 @@ hive/
     github.ts             create a project's GitHub repo, push main (fetch + git, token scrubbed from errors)
     projects.ts           project list, per-project folders, the current-project context (AsyncLocalStorage)
     doc.ts                getDoc/setDoc and typed helpers; serverWrite(fn)
-    llm.ts                generate() for openai (Luminal) / anthropic / fake; model selection
+    llm.ts                generateTurn()/generate() for openai (Luminal, DeepSeek-V4.1-Flash) / anthropic, tool calls, caching, model selection
+    fake.ts               scripted provider for LLM_PROVIDER=fake (tool calls for agents, JSON for the planner)
     git.ts                git via execFile; withRepoLock()
     workspace.ts          workspace repo, per-task worktrees, safePath, commits, diffs, merge
-    runner.ts             runTests() with node --test (tap)
-    agent.ts              coding agent prompt, context builder, parseAction
-    session.ts            session loop, scheduler, steer, takeover, handback, handoff
+    runner.ts             runTests() with node --test (tap, failure extraction, file targeting), checkSyntax()
+    packages.ts           npm allowlist, install_packages, ensureDeps() before code runs
+    agent.ts              coding agent prompt and tools, tool-call validation, edit_file, context and compaction
+    session.ts            session loop (tool calls, live view), finish (sync main, review, merge), scheduler, steer, takeover, handback, handoff
+    review.ts             reviewer pass on a task's diff before it merges
     graph.ts              graph op validation, cycles, ready set, what each mode may start, layout
     verify.ts             the goal check: tests on main, a screenshot, follow-up tasks
     preview.ts            screenshots of the built app with the local Chrome/Edge (headless)
@@ -82,7 +85,8 @@ Set `LLM_PROVIDER=fake` in `.env` to run the whole app with scripted agents and 
 - **The server writes inside `serverWrite(fn)`** (`doc.transact(fn, 'server')`). Observers ignore origin `'server'`. Store plain JSON only (`clean()` strips `undefined`).
 - Server code reads the doc only through `server/doc.ts` (the Hocuspocus-managed instance kept loaded by a direct connection). Never construct a separate `Y.Doc`.
 - Each doc is saved to `data/projects/<id>/doc.bin` every 2 s. Agent transcripts live in `data/projects/<id>/sessions/<sid>.json`, never in the doc.
-- Each task works in its own git worktree `data/projects/<p>/worktrees/<id>` on branch `task/<id>`; finished tasks merge into `main` of that project's `workspace/` under a repo lock.
+- Each task works in its own git worktree `data/projects/<p>/worktrees/<id>` on branch `task/<id>`. To finish, main is merged into the task branch first (conflict markers go back to the agent), tests re-run if main changed, a reviewer checks the diff, then the branch merges into `main` of that project's `workspace/` under a repo lock.
+- Agents act through native tool calls (read_file, write_file, edit_file, search, run_tests, run_cli, install_packages, screenshot, finish), several per reply. Their history is append-only so provider prompt caches hit; it is shortened once it passes AGENT_CONTEXT_CHARS.
 - Every agent write and every human edit is its own commit. Agents commit as "Hive Agent"; people commit under their own name (GitHub noreply email when signed in).
 - **Endpoints that start work return 202**; results arrive through the Y.Doc.
 - **Modes** (`Project.mode`, unset = Automatic) decide what starts by itself: Manual nothing; Semi-auto every ready task except ones marked `ask` (they wait for Start); Automatic everything. In Semi-auto and Automatic, when every task is done the goal check (`verify.ts`) tests main, screenshots `src/server.js` or `src/index.html` with the local Chrome, and lets the planner add follow-up tasks (at most 3 rounds until a person speaks). The graph is laid out top to bottom by `shared/layout.ts`, on the server when the planner reshapes it and in the browser when cards overlap.
@@ -116,7 +120,7 @@ The rows below are per project: prefix them with `/api/projects/:project` (e.g. 
 | Method and path | Body | Does |
 |---|---|---|
 | GET /api/state | | JSON snapshot of the doc |
-| POST /api/run | `{by}` | Run ready: start every ready task (2 at a time); in Manual the rest of that batch follows, later tasks wait |
+| POST /api/run | `{by}` | Run ready: start every ready task (MAX_PARALLEL at a time, default 4); in Manual the rest of that batch follows, later tasks wait |
 | POST /api/mode | `{mode, by}` | `manual` / `semi` / `auto` (unset = auto); returns the project |
 | GET /api/previews/:file | | A goal-check screenshot (`Step.image`) |
 | POST /api/tasks/:id/start | `{by}` | Start one task (409 unless deps done) |

@@ -36,8 +36,10 @@ export const ENV_NAMES = [
   'LLM_PROVIDER', 'LLM_API_KEY', 'LLM_BASE_URL', 'AGENT_MODEL', 'PLANNER_MODEL', 'ANTHROPIC_API_KEY',
   'MAX_PARALLEL', 'MAX_STEPS', 'GITHUB_REMOTE', 'GITHUB_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'PORT',
   'DAYTONA_API_KEY', 'DAYTONA_API_URL', 'DAYTONA_TARGET', 'OPENCODE_URL', 'CHROME_PATH', 'VISION_MODEL',
+  'AGENT_MAX_TOKENS', 'AGENT_CONTEXT_CHARS', 'LLM_EXTRA_BODY', 'LLM_CONCURRENCY', 'TEST_TIMEOUT_S', 'REVIEW', 'NPM_ALLOW', 'AGENT_VISION',
 ];
-const LIVE = new Set(['GITHUB_REMOTE', 'GITHUB_TOKEN']);   // read per request; the rest need a restart
+// Read per request; the rest need a restart.
+const LIVE = new Set(['GITHUB_REMOTE', 'GITHUB_TOKEN', 'AGENT_MAX_TOKENS', 'AGENT_CONTEXT_CHARS', 'REVIEW', 'NPM_ALLOW']);
 
 // Only the machine running the server may change .env: a LAN visitor who could set LLM_BASE_URL could capture the key.
 const isLocal = (req: Request) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '');

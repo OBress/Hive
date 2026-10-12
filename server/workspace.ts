@@ -93,10 +93,13 @@ export function writeFile(dir: string, rel: string, content: string) {
 // Stage everything and commit as `author`; returns the short hash, or null if nothing changed.
 export async function commitAll(dir: string, author: Author, message: string): Promise<string | null> {
   await git(dir, ['add', '-A']);
-  const changed = await git(dir, ['diff', '--cached', '--quiet']).then(() => false, () => true);
-  if (!changed) return null;
-  await git(dir, ['commit', '-m', message], author);
-  return head(dir);
+  // `git commit` prints "[branch abc1234] message"; with nothing staged it exits 1 saying so.
+  const out = await git(dir, ['commit', '-m', message], author).catch((e: { stdout?: string }) => {
+    if (/nothing to commit|nothing added to commit|no changes added/.test(e.stdout ?? '')) return null;
+    throw e;
+  });
+  if (out === null) return null;
+  return /^\[[^\]]* ([0-9a-f]{7,40})\]/m.exec(out)?.[1] ?? head(dir);
 }
 
 export const head = async (dir: string) => (await git(dir, ['rev-parse', '--short', 'HEAD'])).trim();

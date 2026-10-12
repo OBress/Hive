@@ -94,23 +94,33 @@ const extraBody = (() => {
 })();
 let jsonMode = true;   // turned off if the provider rejects response_format
 
-// A small semaphore so we never run more than MAX_PARALLEL + 1 calls at once.
-const limit = Number(process.env.MAX_PARALLEL || 2) + 1;
-let active = 0;
-const waiting: (() => void)[] = [];
-async function acquire() {
-  if (active < limit) { active++; return; }
-  await new Promise<void>((r) => waiting.push(r));
+// Two lanes of concurrent model calls: agents (one per running task, MAX_PARALLEL of them) and everything else
+// (chat, summaries, reviews, goal checks), so a person's chat question never waits behind busy agents.
+// LLM_CONCURRENCY caps the agent lane if the provider's rate limit is lower than MAX_PARALLEL.
+function lane(limit: number) {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return {
+    async acquire() {
+      if (active < limit) { active++; return; }
+      await new Promise<void>((r) => waiting.push(r));
+    },
+    release() {
+      const next = waiting.shift();
+      if (next) next(); else active--;
+    },
+  };
 }
-function release() {
-  const next = waiting.shift();
-  if (next) next(); else active--;
-}
+const lanes = {
+  agent: lane(Number(process.env.LLM_CONCURRENCY || process.env.MAX_PARALLEL || 4)),
+  other: lane(3),
+};
 
 // One model reply: text, tool calls and why it stopped.
 export async function generateTurn(opts: GenerateOptions): Promise<Turn> {
   if (configError) throw new Error(configError);
-  await acquire();
+  const l = opts.tools?.length ? lanes.agent : lanes.other;
+  await l.acquire();
   try {
     let emitted = false;
     const mark = <T extends unknown[]>(f?: (...a: T) => void) => (...a: T) => { emitted = true; f?.(...a); };
@@ -128,7 +138,7 @@ export async function generateTurn(opts: GenerateOptions): Promise<Turn> {
       }
     }
   } finally {
-    release();
+    l.release();
   }
 }
 
