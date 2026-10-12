@@ -78,7 +78,7 @@ export function DeleteDialog({ project, onClose, onDeleted }: { project: Project
         <p>This stops its agents and deletes its task graph, chat, history and workspace for everyone it is shared with. It can&apos;t be undone.</p>
         {project.repo && <p className="hv-modal__note"><Icon name="github" size={14} /> The GitHub repo <b>{project.repo}</b> is kept.</p>}
         <label className="hv-field">
-          <span className="hv-label">Type the project name to confirm</span>
+          <span className="hv-label">Type <b>{project.name}</b> to confirm</span>
           <input className="hv-input" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={project.name} />
         </label>
         {err && <p className="hv-projects__err">{err}</p>}
