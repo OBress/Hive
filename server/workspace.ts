@@ -63,6 +63,22 @@ export function listFiles(dir: string): string[] {
   return out.sort();
 }
 
+// Built-in regex search over src/ and test/ (used when no OpenCode server is connected): up to 50 matching lines,
+// or why the pattern is invalid.
+export function searchFiles(dir: string, pattern: string): { path: string; line: number; text: string }[] | string {
+  let re: RegExp;
+  try { re = new RegExp(pattern); } catch (e) { return `invalid regular expression: ${(e as Error).message}`; }
+  const out: { path: string; line: number; text: string }[] = [];
+  for (const f of listFiles(dir)) {
+    const lines = (readFile(dir, f) ?? '').split('\n');
+    for (const [i, l] of lines.entries()) {
+      if (re.test(l)) out.push({ path: f, line: i + 1, text: l.trim().slice(0, 200) });
+      if (out.length >= 50) return out;
+    }
+  }
+  return out;
+}
+
 export function readFile(dir: string, rel: string): string | null {
   const abs = join(dir, rel);
   return existsSync(abs) ? readFileSync(abs, 'utf8') : null;

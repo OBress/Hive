@@ -1,14 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AutonomyMode, Owner, TaskSpec, TaskState } from '@hive/shared/types';
-import { AGENT_SYSTEM, SEARCH_HELP, buildMessages, contextText, isTestFile, parseAction, type Action } from './agent.ts';
+import { AGENT_SYSTEM, TOOLS, applyEdit, buildMessages, contextText, isTestFile, parseAction, planOf, toAction, type Action } from './agent.ts';
 import {
   addChat, addStep, HttpError, live, openTerminal, serverWrite, sessions, setSession, setTaskState, syncTaskStates, taskState, tasks,
   terminal, trim,
 } from './doc.ts';
 import { AGENT, personAuthor, type GitUser } from './git.ts';
 import { autoStartable, readyTasks, waitingForOk } from './graph.ts';
-import { agentMaxTokens, generate, models, type Msg } from './llm.ts';
+import { agentMaxTokens, generateTurn, models, type Msg, type ToolCall, type ToolResult, type Turn } from './llm.ts';
 import { saveTranscript } from './history.ts';
 import { openCodeOn, search } from './opencode.ts';
 import { current, currentId, inProject, sessionsDir, workspaceDir } from './projects.ts';
@@ -16,7 +16,7 @@ import { summarize } from './planner.ts';
 import { afterSchedule } from './verify.ts';
 import { runCli, runTests } from './runner.ts';
 import {
-  commitAll, diff, ensureWorktree, head, listFiles, mergeToMain, readFile, safePath, takeMain, worktreeDir, writeFile,
+  commitAll, diff, ensureWorktree, head, listFiles, mergeToMain, readFile, safePath, searchFiles, takeMain, worktreeDir, writeFile,
 } from './workspace.ts';
 
 const MAX_PARALLEL = Number(process.env.MAX_PARALLEL || 2);
@@ -27,7 +27,8 @@ const AGENT_OWNER: Owner = { kind: 'agent', name: 'agent' };
 export interface SessionData {
   id: string; taskId: string;
   transcript: Msg[];
-  pending: string[];          // tool results and notes for the next user message
+  pending: string[];          // notes for the next user message
+  results?: ToolResult[];     // answers to the last reply's tool calls, sent with the next user message
   steers: string[];           // teammates' messages, picked up before the next model call
   stepCount: number;
   limit: number;              // pause when stepCount reaches this (MAX_STEPS per run)
@@ -92,7 +93,7 @@ async function ensureSession(taskId: string, by: string): Promise<SessionData> {
   await ensureWorktree(taskId);
   const s: SessionData = {
     id: `s_${taskId}_${Date.now().toString(36)}`, taskId,
-    transcript: [], pending: [], steers: [], stepCount: 0, limit: MAX_STEPS, testOk: false, bad: 0, errors: 0,
+    transcript: [], pending: [], results: [], steers: [], stepCount: 0, limit: MAX_STEPS, testOk: false, bad: 0, errors: 0,
   };
   save(s);
   setSession(s.id, { taskId, state: 'paused', summary: '', stepCount: 0, startedBy: by });
@@ -224,55 +225,127 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
   if (s.stepCount >= s.limit) { pause(s, `Paused after ${MAX_STEPS} steps; start it again to continue`); return false; }
 
   s.pending.push(...s.steers.splice(0));
-  const userMsg = s.pending.splice(0).join('\n\n') || 'Continue.';
-  s.transcript.push({ role: 'user', content: userMsg });
-  const putBack = () => { s.transcript.pop(); s.pending.unshift(userMsg); save(s); };
+  const results = (s.results ??= []).splice(0);
+  const notes = s.pending.splice(0);
+  const userMsg: Msg = { role: 'user', content: notes.join('\n\n') || (results.length ? '' : 'Continue.'), ...(results.length ? { results } : {}) };
+  s.transcript.push(userMsg);
+  const putBack = () => { s.transcript.pop(); s.pending.unshift(...notes); s.results!.unshift(...results); save(s); };
 
   const dir = worktreeDir(t.id);
   const messages = buildMessages(contextText(contextFor(t, s, dir)), s.transcript);
-  let text = '';
-  let last = 0;
-  let timer: NodeJS.Timeout | undefined;
-  const flush = () => { last = Date.now(); timer = undefined; serverWrite(() => live().set(sid, text)); };
-  let reply: string;
+  const view = liveView(sid);
+  let reply: Turn;
   try {
-    reply = await generate({
-      model: models.agent, system: AGENT_SYSTEM + (openCodeOn() ? SEARCH_HELP : ''), messages, signal: ctrl.signal, maxTokens: agentMaxTokens(),
-      onToken: (d) => {
-        text += d;
-        if (Date.now() - last >= 150) flush();
-        else timer ??= setTimeout(flush, 150 - (Date.now() - last));
-      },
+    reply = await generateTurn({
+      model: models.agent, system: AGENT_SYSTEM, tools: TOOLS, messages, signal: ctrl.signal, maxTokens: agentMaxTokens(),
+      onToken: view.text, onReasoning: view.reasoning, onToolInput: view.tool,
     });
   } catch (e) {
     putBack();
     if (ctrl.signal.aborted) return false;
+    if ((e as { badReply?: boolean }).badReply) return badReply(s, (e as Error).message);
     console.error(`Model error in ${sid}:`, (e as Error).message);
     if (++s.errors >= 2) { fail(s, `Model error: ${(e as Error).message}`); return false; }
     return true;
   } finally {
-    clearTimeout(timer);
-    serverWrite(() => live().delete(sid));
+    view.end();
   }
   if (!mine(s, ctrl)) { putBack(); return false; }   // paused or reassigned while generating
 
   s.errors = 0;
-  s.transcript.push({ role: 'assistant', content: reply });
+  s.transcript.push({
+    role: 'assistant', content: reply.text, ...(reply.calls.length ? { calls: reply.calls } : {}),
+    ...(reply.raw ? { raw: reply.raw, rawModel: models.agent } : {}), ...(reply.reasoning ? { reasoning: reply.reasoning } : {}),
+  });
   s.stepCount++;
   setSession(sid, { stepCount: s.stepCount });
-  const { plan, action, error } = parseAction(reply);
+  const plan = planOf(reply.text) || describe(reply.calls);
   if (plan) addStep({ ...ref(s), kind: 'plan', text: plan });
-  if (!action) {
-    if (++s.bad >= 2) { save(s); fail(s, `Two replies without a valid action (${error})`); return false; }
-    s.pending.push(`Your last reply had no valid action (${error}). Reply with one PLAN: line and exactly one action.`);
+
+  if (!reply.calls.length) {
+    // A model that ignored the tools but wrote the old text tags still gets its action run.
+    const { action, error } = parseAction(reply.text);
+    if (!action) {
+      const why = reply.stop === 'length' ? 'the reply hit the output limit before any tool call'
+        : reply.stop === 'refusal' ? 'the model declined' : error === 'no action found' ? 'it called no tool' : error!;
+      return badReply(s, why);
+    }
+    s.bad = 0;
+    s.pending.push(await perform(s, t, dir, action));
     save(s);
     return true;
   }
+
   s.bad = 0;
-  await act(s, t, dir, action);
+  let finishing: { id: string; summary: string } | null = null;
+  for (const c of reply.calls) {
+    const { action, error } = toAction(c);
+    if (!action) { s.results!.push({ id: c.id, content: `Error: ${error}`, isError: true }); continue; }
+    if (action.type === 'finish') { finishing = { id: c.id, summary: action.summary }; continue; }
+    const out = await perform(s, t, dir, action).catch((e: Error) => `Error: ${e.message}`);
+    s.results!.push({ id: c.id, content: out, isError: out.startsWith('Error:') || undefined });
+  }
+  if (finishing) {
+    const ok = s.testOk;
+    s.results!.push({ id: finishing.id, content: ok ? 'Finishing.' : 'Error: run the whole test suite (run_tests with no files) and make every test pass before finishing.', isError: !ok || undefined });
+    if (ok) await finish(s, t, finishing.summary);
+  }
   save(s);
   if (s.stepCount % 8 === 0) void summarize(s.taskId).catch(() => {});   // rolling summary covers older turns
   return true;
+}
+
+// A reply with nothing to run: tell the model why; the third one in a row fails the task.
+function badReply(s: SessionData, why: string): boolean {
+  if (++s.bad >= 3) { save(s); fail(s, `Three replies without a valid tool call (${why})`); return false; }
+  s.pending.push(`Your last reply did nothing: ${why}. Reply with one short sentence and your tool calls. If a file is too long for one reply, split it into smaller files or change it with edit_file.`);
+  save(s);
+  return true;
+}
+
+const VERBS: Record<string, string> = { read_file: 'Read', write_file: 'Write', edit_file: 'Edit', search: 'Search', run_tests: 'Run tests', run_cli: 'Run the CLI', finish: 'Finish' };
+const describe = (calls: ToolCall[]) => calls.map((c) => `${VERBS[c.name] ?? c.name}${typeof c.input.path === 'string' ? ` ${c.input.path}` : ''}`).join(', ');
+
+// What the agent is producing right now, mirrored into live[sid] at most every 150 ms: its text, then each tool
+// call as it streams (a file being written shows as the file's text).
+function liveView(sid: string) {
+  let text = '';
+  let reasoning = '';
+  const calls: { name: string; json: string }[] = [];
+  let last = 0;
+  let timer: NodeJS.Timeout | undefined;
+  const render = () => [
+    !text && !calls.length && reasoning ? `(thinking) ${reasoning.slice(-800)}` : '',
+    text.trim(),
+    ...calls.filter(Boolean).map((c) => liveCall(c.name, partialFields(c.json))),
+  ].filter(Boolean).join('\n\n');
+  const flush = () => { last = Date.now(); timer = undefined; serverWrite(() => live().set(sid, render())); };
+  const tick = () => { if (Date.now() - last >= 150) flush(); else timer ??= setTimeout(flush, 150 - (Date.now() - last)); };
+  return {
+    text: (d: string) => { text += d; tick(); },
+    reasoning: (d: string) => { reasoning += d; tick(); },
+    tool: (i: number, name: string, json: string) => { calls[i] = { name, json }; tick(); },
+    end: () => { clearTimeout(timer); serverWrite(() => live().delete(sid)); },
+  };
+}
+
+function liveCall(name: string, f: Record<string, string>): string {
+  if (name === 'write_file') return `<write path="${f.path ?? '…'}">\n${f.content ?? ''}`;
+  if (name === 'edit_file') {
+    const lines = (v: string | undefined, mark: string) => (v ?? '').split('\n').map((l) => `${mark} ${l}`).join('\n');
+    return `✎ ${f.path ?? '…'}\n${lines(f.old_string, '-')}\n${lines(f.new_string, '+')}`;
+  }
+  return `→ ${VERBS[name] ?? name}${f.path ? ` ${f.path}` : f.pattern ? ` /${f.pattern}/` : f.args ? ` ${f.args}` : ''}`;
+}
+
+// The string fields of a tool call's input JSON while it is still streaming (the last one may be unfinished).
+export function partialFields(json: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const m of json.matchAll(/"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)/g)) {
+    const raw = m[2].replace(/\\u[0-9a-fA-F]{0,3}$/, '');
+    try { out[m[1]] = JSON.parse(`"${raw}"`); } catch { out[m[1]] = raw; }
+  }
+  return out;
 }
 
 function contextFor(t: TaskSpec, s: SessionData, dir: string) {
@@ -288,42 +361,64 @@ function contextFor(t: TaskSpec, s: SessionData, dir: string) {
 
 // Ground truth after each action, so the agent never relies on files it only planned to write.
 const filesNow = (dir: string) => `Files in the workspace now: ${listFiles(dir).join(', ') || 'none'}.`;
+const MAX_READ = 30000;
 
-async function act(s: SessionData, t: TaskSpec, dir: string, a: Action) {
+// Run one action; returns what the model sees. Errors start with "Error:".
+async function perform(s: SessionData, t: TaskSpec, dir: string, a: Action): Promise<string> {
   if (a.type === 'read') {
     const content = readFile(dir, a.path);
-    s.pending.push(content === null ? `${a.path} does not exist. ${filesNow(dir)}` : `Contents of ${a.path}:\n${trim(content, 12000)}`);
     addStep({ ...ref(s), kind: 'read', text: `Read ${a.path}`, path: a.path });
-  } else if (a.type === 'search') {
-    const found = openCodeOn() ? await search(dir, a.pattern).catch(() => null) : null;
-    s.pending.push(found === null ? 'Search is not available; use <read/> instead.'
-      : `Search for "${a.pattern}": ${found.map((m) => `\n${m.path}:${m.line}: ${m.text}`).join('') || 'no matches.'}`);
-    addStep({ ...ref(s), kind: 'read', text: `Searched for "${a.pattern}"${found ? `: ${found.length} match${found.length === 1 ? '' : 'es'}` : ' (search unavailable)'}` });
-  } else if (a.type === 'write') {
-    writeFile(dir, a.path, a.content);
-    const commit = await commitAll(dir, AGENT, `${t.title}: write ${a.path}`);
-    const d = commit ? await diff(dir, 'HEAD~1', 'HEAD', a.path) : '';
-    addStep({ ...ref(s), kind: 'edit', text: `Wrote ${a.path}`, path: a.path, diff: d, commit: commit ?? undefined });
-    s.testOk = false;
-    s.pending.push(`${commit ? `Wrote ${a.path} (commit ${commit}).` : `${a.path} is unchanged.`} ${filesNow(dir)}`);
-  } else if (a.type === 'test') {
-    const term = openTerminal(t.id, 'agent', 'node --test');
-    const { sandbox, ...r } = await runTests(dir, term.write);
-    term.end(r.failed ? 1 : 0);
-    addStep({ ...ref(s), kind: 'test', text: `Tests: ${r.passed} passed, ${r.failed} failed${sandbox ? ' (in sandbox)' : ''}`, test: r });
-    setTaskState(t.id, { lastTest: { passed: r.passed, failed: r.failed } });
-    s.testOk = r.failed === 0 && r.passed > 0;
-    const ran = listFiles(dir).filter(isTestFile);
-    s.pending.push(`Test results: ${r.passed} passed, ${r.failed} failed. Test files that ran: ${ran.join(', ') || 'none'}.\n${r.output.slice(-2000)}`);
-  } else if (a.type === 'run') {
-    const r = readFile(dir, 'src/cli.js') === null ? null : await runCliIn(t.id, dir, 'agent', a.args);
-    s.pending.push(r ? `${r.cmd} exited with ${r.exitCode}${r.exitCode === 124 ? ' (stopped after 15 s)' : ''}. Output:\n${r.output.slice(-2000) || '(nothing)'}`
-      : `src/cli.js does not exist, so there is nothing to run. ${filesNow(dir)}`);
-  } else if (!s.testOk) {
-    s.pending.push('Run <test/> and make all tests pass before finishing.');
-  } else {
-    await finish(s, t, a.summary);
+    if (content === null) return `Error: ${a.path} does not exist. ${filesNow(dir)}`;
+    const lines = content.split('\n');
+    const from = Math.max(1, a.start ?? 1);
+    const to = Math.min(lines.length, a.end ?? lines.length);
+    const body = lines.slice(from - 1, to).map((l, i) => `${String(from + i).padStart(4)}  ${l}`).join('\n');
+    const shown = trim(body, MAX_READ);
+    return `${a.path} (lines ${from}-${to} of ${lines.length}):\n${shown}${shown.length < body.length ? '\nRead the rest with start_line.' : ''}`;
   }
+  if (a.type === 'search') {
+    const found = openCodeOn() ? await search(dir, a.pattern).catch(() => null) : null;
+    const r = found ?? searchFiles(dir, a.pattern);
+    addStep({ ...ref(s), kind: 'read', text: `Searched for "${a.pattern}"${typeof r === 'string' ? '' : `: ${r.length} match${r.length === 1 ? '' : 'es'}`}` });
+    if (typeof r === 'string') return `Error: ${r}`;
+    return r.length ? r.map((m) => `${m.path}:${m.line}: ${m.text}`).join('\n') : 'No matches.';
+  }
+  if (a.type === 'write' || a.type === 'edit') {
+    let content = a.type === 'write' ? a.content : '';
+    if (a.type === 'edit') {
+      const cur = readFile(dir, a.path);
+      if (cur === null) return `Error: ${a.path} does not exist; create it with write_file. ${filesNow(dir)}`;
+      const r = applyEdit(cur, a.old, a.new, a.all);
+      if (r.error) return `Error: ${r.error}`;
+      content = r.text!;
+    }
+    writeFile(dir, a.path, content);
+    const commit = await commitAll(dir, AGENT, `${t.title}: ${a.type} ${a.path}`);
+    const d = commit ? await diff(dir, 'HEAD~1', 'HEAD', a.path) : '';
+    const verb = a.type === 'write' ? 'Wrote' : 'Edited';
+    addStep({ ...ref(s), kind: 'edit', text: `${verb} ${a.path}`, path: a.path, diff: d, commit: commit ?? undefined });
+    if (commit) s.testOk = false;
+    return commit ? `${verb} ${a.path} (commit ${commit}).` : `${a.path} is unchanged.`;
+  }
+  if (a.type === 'test') {
+    const term = openTerminal(t.id, 'agent', ['node --test', ...(a.files ?? [])].join(' '));
+    const { sandbox, ...r } = await runTests(dir, term.write, a.files);
+    term.end(r.failed ? 1 : 0);
+    addStep({ ...ref(s), kind: 'test', text: `Tests${a.files ? ` (${a.files.join(', ')})` : ''}: ${r.passed} passed, ${r.failed} failed${sandbox ? ' (in sandbox)' : ''}`, test: r });
+    setTaskState(t.id, { lastTest: { passed: r.passed, failed: r.failed } });
+    if (!a.files) s.testOk = r.failed === 0 && r.passed > 0;
+    const ran = a.files ?? listFiles(dir).filter(isTestFile);
+    return `Test results: ${r.passed} passed, ${r.failed} failed. Test files that ran: ${ran.join(', ') || 'none'}.\n${r.output.slice(-4000)}`;
+  }
+  if (a.type === 'run') {
+    const r = readFile(dir, 'src/cli.js') === null ? null : await runCliIn(t.id, dir, 'agent', a.args);
+    return r ? `${r.cmd} exited with ${r.exitCode}${r.exitCode === 124 ? ' (stopped after 15 s)' : ''}. Output:\n${r.output.slice(-2000) || '(nothing)'}`
+      : `Error: src/cli.js does not exist, so there is nothing to run. ${filesNow(dir)}`;
+  }
+  // A finish written as a text tag (the fallback path).
+  if (!s.testOk) return 'Run the whole test suite and make every test pass before finishing.';
+  await finish(s, t, a.summary);
+  return 'Finishing.';
 }
 
 async function finish(s: SessionData, t: TaskSpec, summary: string) {

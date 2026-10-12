@@ -40,10 +40,10 @@ function runNode(dir: string, args: string[], ms: number, onOutput?: (chunk: str
 
 // With DAYTONA_API_KEY set the tests run in the sandbox; if it cannot be reached they run here so the demo keeps going.
 // Here the output streams to onOutput; from the sandbox it arrives in one piece at the end.
-export async function runTests(dir: string, onOutput?: (chunk: string) => void): Promise<TestResult> {
+export async function runTests(dir: string, onOutput?: (chunk: string) => void, files: string[] = []): Promise<TestResult> {
   if (sandboxOn()) {
     try {
-      const r = await sandboxExec(dir, 'node --test --test-reporter=tap', 30);
+      const r = await sandboxExec(dir, ['node --test --test-reporter=tap', ...files.map((f) => `'${f}'`)].join(' '), 30);
       onOutput?.(r.output);
       let { passed, failed } = parseTap(r.output);
       if (r.exitCode !== 0 && !/^# pass \d+/m.test(r.output) && failed === 0) failed = 1;   // crash or timeout
@@ -52,7 +52,7 @@ export async function runTests(dir: string, onOutput?: (chunk: string) => void):
       console.error(`Sandbox unavailable, running tests on this machine: ${(e as Error).message}`);
     }
   }
-  const r = await runNode(dir, ['--test', '--test-reporter=tap'], 30000, onOutput);
+  const r = await runNode(dir, ['--test', '--test-reporter=tap', ...files], 30000, onOutput);
   let { passed, failed } = parseTap(r.stdout);
   const summary = /^# pass \d+/m.test(r.stdout);
   if ((r.code !== 0 || r.killed) && (r.killed || !summary) && failed === 0) failed = 1;   // crash or timeout
