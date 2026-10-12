@@ -283,7 +283,7 @@ routes.post('/chat', (req, res) => {
   res.status(202).json({ id: msg.id });
 });
 
-// Test main; if green, push it to the repo set on Overview (else GITHUB_REMOTE) with the approver's token
+// Test main; if green, push it to the project's own repo with the approver's token
 // (else GITHUB_TOKEN, else not at all).
 routes.post('/approve', async (req, res) => {
   const { by } = need(req, 'by');

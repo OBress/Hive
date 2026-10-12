@@ -285,7 +285,7 @@ export function resolveConflict(_id: string, _choice: 'ours' | 'theirs' | 'propo
   toast('Merge conflicts are resolved by taking over the task.');
 }
 
-// Approve: the server runs the tests on main and pushes to the project's repo from Overview (else GITHUB_REMOTE).
+// Approve: the server runs the tests on main and pushes to the project's own repo (set on Overview).
 export async function push(by: string, _repo: string | null) {
   setLocal({ pushing: true });
   try {

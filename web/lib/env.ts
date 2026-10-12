@@ -25,7 +25,6 @@ export const ENV_VARS: EnvVar[] = [
   { name: 'ANTHROPIC_API_KEY', kind: 'secret', group: 'Model', about: 'Only for LLM_PROVIDER=anthropic.' },
   { name: 'MAX_PARALLEL', kind: 'config', group: 'Limits', example: '2', about: 'Agents running at once.' },
   { name: 'MAX_STEPS', kind: 'config', group: 'Limits', example: '20', about: 'Steps per session before an agent pauses.' },
-  { name: 'GITHUB_REMOTE', kind: 'config', group: 'GitHub', about: 'Fallback push target; a project\'s own repo wins.' },
   { name: 'GITHUB_TOKEN', kind: 'secret', group: 'GitHub', about: 'Fallback push token; signed-in people push with their own.' },
   { name: 'SUPABASE_URL', kind: 'config', group: 'Sign-in', about: 'Supabase project URL. Blank turns sign-in off.' },
   { name: 'SUPABASE_ANON_KEY', kind: 'config', group: 'Sign-in', about: 'Public anon key; the browser gets it from /api/config.' },

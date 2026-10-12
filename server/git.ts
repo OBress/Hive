@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { resolve as absolute } from 'node:path';
+import { DATA_DIR } from './paths.ts';
 
 export interface Author { name: string; email: string }
 
@@ -9,7 +11,9 @@ export const AGENT: Author = { name: 'Hive Agent', email: 'agent@hive.local' };
 export function git(cwd: string, args: string[], author?: Author): Promise<string> {
   const pre = author ? ['-c', `user.name=${author.name}`, '-c', `user.email=${author.email}`] : [];
   return new Promise((resolve, reject) => {
-    execFile('git', [...pre, ...args], { cwd, maxBuffer: 20 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+    // GIT_CEILING_DIRECTORIES: a folder under data/ that is not a repo yet (a half-made workspace, a lost worktree)
+    // must fail, not fall through to whatever repo data/ itself sits in (Hive's own checkout).
+    execFile('git', [...pre, ...args], { cwd, maxBuffer: 20 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CEILING_DIRECTORIES: absolute(DATA_DIR) } },
       (err, stdout, stderr) => {
         if (err) reject(Object.assign(new Error(`git ${args[args[0] === "-c" ? 2 : 0]} failed: ${(stderr || err.message).trim()}`), { stdout, code: err.code }));
         else resolve(stdout);

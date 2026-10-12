@@ -9,9 +9,12 @@ const root = mkdtempSync(join(tmpdir(), 'hive-backup-'));
 const bare = join(root, 'remote.git');
 execFileSync('git', ['init', '--bare', '-b', 'main', bare]);
 vi.stubEnv('HIVE_DATA_DIR', join(root, 'data'));
-vi.stubEnv('GITHUB_REMOTE', bare);
 vi.stubEnv('GITHUB_TOKEN', 'test');
-const { inProject } = await import('./projects.ts');
+const { createProject, inProject: run, updateProject } = await import('./projects.ts');
+// The project's own repo is the bare repo; nothing else is ever used as a remote.
+const p = await createProject('Backup test', '', 'ana');
+await updateProject(p.id, { repo: bare });
+const inProject = <T>(_id: string, fn: () => T) => run(p.id, fn);
 const { AGENT } = await import('./git.ts');
 const ws = await import('./workspace.ts');
 afterAll(() => rmSync(root, { recursive: true, force: true }));

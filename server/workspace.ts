@@ -184,14 +184,59 @@ export function syncMain(taskId: string): Promise<{ changed: boolean; conflicts:
     try {
       await git(dir, ['merge', '--no-edit', '-m', `Merge main into task/${taskId}`, 'main'], HIVE);
     } catch (e) {
-      const conflicts = (await git(dir, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')).split('\n').filter(Boolean);
-      if (!conflicts.length) { await git(dir, ['merge', '--abort']).catch(() => {}); throw e; }
+      const unmerged = (await git(dir, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')).split('\n').filter(Boolean);
+      if (!unmerged.length) { await git(dir, ['merge', '--abort']).catch(() => {}); throw e; }
+      // Files the agent can't edit are resolved here, on the spot; only code conflicts go back to the agent.
+      const conflicts: string[] = [];
+      for (const f of unmerged) if (!await resolveForAgent(dir, f)) conflicts.push(f);
       await git(dir, ['add', '-A']);
-      await git(dir, ['commit', '--no-edit', '-m', `Merge main into task/${taskId} (conflicts to resolve)`], HIVE);
+      const note = conflicts.length ? ' (conflicts to resolve)' : ' (dependencies combined)';
+      await git(dir, ['commit', '--no-edit', '-m', `Merge main into task/${taskId}${note}`], HIVE);
       return { changed: true, conflicts };
     }
     return { changed: (await head(dir)) !== before, conflicts: [] };
   });
+}
+
+// Resolve a conflicted file that isn't code: package.json keeps main's version plus both sides' dependencies,
+// package-lock.json takes main's (npm then regenerates it from the combined package.json), .gitignore keeps
+// every line from both. Returns false for files the agent must resolve (src/ and test/).
+async function resolveForAgent(dir: string, file: string): Promise<boolean> {
+  const side = (n: 2 | 3) => git(dir, ['show', `:${n}:${file}`]).catch(() => '');
+  if (file === 'package.json') {
+    const [ours, theirs] = await Promise.all([side(2), side(3)]);
+    const text = mergePackageJson(ours, theirs);
+    if (text === null) return false;
+    writeFileSync(join(dir, file), text);
+    return true;
+  }
+  if (file === 'package-lock.json') {
+    await git(dir, ['checkout', '--theirs', '--', file]);
+    return true;
+  }
+  if (file === '.gitignore') {
+    const [ours, theirs] = await Promise.all([side(2), side(3)]);
+    const lines = [...new Set([...theirs.split('\n'), ...ours.split('\n')].map((l) => l.trimEnd()).filter(Boolean))];
+    writeFileSync(join(dir, file), `${lines.join('\n')}\n`);
+    return true;
+  }
+  return false;
+}
+
+// main's package.json ("theirs") with the task's added dependencies on top; null if either side isn't JSON.
+export function mergePackageJson(ours: string, theirs: string): string | null {
+  try {
+    const a = JSON.parse(ours) as Record<string, unknown>;
+    const b = JSON.parse(theirs) as Record<string, unknown>;
+    const out: Record<string, unknown> = { ...a, ...b };
+    for (const k of ['dependencies', 'devDependencies']) {
+      const merged = { ...(a[k] as object | undefined), ...(b[k] as object | undefined) };
+      if (Object.keys(merged).length) out[k] = Object.fromEntries(Object.entries(merged).sort(([x], [y]) => x.localeCompare(y)));
+    }
+    return `${JSON.stringify(out, null, 2)}\n`;
+  } catch {
+    return null;
+  }
 }
 
 export const hasMarkers = (text: string) => /^<{7}( |$)/m.test(text) && /^>{7}( |$)/m.test(text);

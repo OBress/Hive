@@ -55,13 +55,15 @@ function npmCli(): string | null {
 }
 
 function npm(dir: string, args: string[], onOutput?: (chunk: string) => void, ms = 180000): Promise<{ code: number; output: string }> {
+  // Without its own package.json npm would use the nearest one above it (Hive's, if data/ is inside the checkout).
+  if (!existsSync(join(dir, 'package.json'))) return Promise.resolve({ code: 1, output: `${dir} has no package.json` });
   const cli = npmCli();
   if (!cli) return Promise.resolve({ code: 1, output: 'npm was not found next to this Node installation' });
   const keep = ['APPDATA', 'LOCALAPPDATA', 'npm_config_cache', 'npm_config_registry'];
   const env: NodeJS.ProcessEnv = { ...minimalEnv(), NODE_ENV: 'development' };
   for (const k of keep) if (process.env[k]) env[k] = process.env[k];
   return new Promise((resolve) => {
-    const p = spawn(process.execPath, [cli, ...args, '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], { cwd: dir, env, windowsHide: true });
+    const p = spawn(process.execPath, [cli, ...args, '--prefix', dir, '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], { cwd: dir, env, windowsHide: true });
     let output = '';
     const take = (d: Buffer) => { output = (output + d.toString()).slice(-20000); onOutput?.(d.toString()); };
     p.stdout.on('data', take);

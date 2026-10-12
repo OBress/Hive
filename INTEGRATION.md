@@ -11,7 +11,7 @@ Hive holds a list of projects (`Project` in `shared/types.ts`). Each one has its
 | GET /api/projects | | `{projects: Project[]}` |
 | POST /api/projects | `{name, goal?, by, createRepo?}` | 201 `Project & {repoError?}` (id is a slug of the name plus a random suffix). Unless `createRepo` is `false`, the server also creates a **private GitHub repo** for it under the creator's account (their sign-in token, else `GITHUB_TOKEN`), pushes the starting files and sets it as the project's `repo`. If that fails the project still exists and `repoError` says why. |
 | GET /api/projects/:project | | `Project` |
-| POST /api/projects/:project/repo | `{repo: "owner/repo" \| null}` | `Project`; sets that project's push target for Approve (overrides `GITHUB_REMOTE`) |
+| POST /api/projects/:project/repo | `{repo: "owner/repo" \| null}` | `Project`; sets that project's push target for Approve and branch backups (its own repo is the only remote a project ever uses) |
 
 On disk: `data/projects.json` (the list) and `data/projects/<id>/` with `doc.bin`, `workspace/`, `worktrees/` and `sessions/`.
 

@@ -44,6 +44,7 @@ export interface SessionData {
   bad: number; errors: number;
   conflicts?: number;         // merge conflicts the agent has been asked to reconcile in this run
   reviews?: number;           // reviews that sent the change back in this run
+  mainMoved?: boolean;        // another task merged into main: bring it in before the next reply
 }
 
 // Keyed by project/session id; everything below runs inside one project (see projects.ts).
@@ -121,7 +122,7 @@ export function startTask(taskId: string, by: string): Promise<string> {
   if (waiting.length) throw new HttpError(409, `Waiting on: ${waiting.join(', ')}`);
   setTaskState(taskId, { status: 'running', owner: AGENT_OWNER, note: undefined });   // claim it before any await
   return ensureSession(taskId, by).then((s) => {
-    Object.assign(s, { limit: s.stepCount + MAX_STEPS, bad: 0, errors: 0, reviews: 0 });
+    Object.assign(s, { limit: s.stepCount + MAX_STEPS, bad: 0, errors: 0, reviews: 0, conflicts: 0, mainMoved: true });
     save(s);
     setSession(s.id, { state: 'running' });
     resume(s.id);
@@ -179,7 +180,7 @@ export function schedule(): string[] {
   for (const st of taskState().values()) {
     if (st.owner.kind !== 'agent') continue;
     if (st.status === 'paused' && st.note === 'server restarted') setTaskState(st.taskId, { status: 'todo', note: undefined });
-    else if (st.status === 'failed' && (retried.get(k(st.taskId)) ?? 0) < RETRIES) {
+    else if ((st.status === 'failed' || (st.status === 'needs_review' && /conflict/i.test(st.note ?? ''))) && (retried.get(k(st.taskId)) ?? 0) < RETRIES) {
       const n = (retried.get(k(st.taskId)) ?? 0) + 1;
       retried.set(k(st.taskId), n);
       addStep({ taskId: st.taskId, kind: 'error', by: 'planner', text: `Retrying (${n} of ${RETRIES}) after: ${st.note ?? 'failure'}` });
@@ -236,6 +237,11 @@ async function turn(sid: string, ctrl: AbortController): Promise<boolean> {
   if (!s || !t || !mine(s, ctrl)) return false;
   if (s.stepCount >= s.limit) { pause(s, `Paused after ${MAX_STEPS} steps; start it again to continue`); return false; }
 
+  if (s.mainMoved) {
+    s.mainMoved = false;
+    const note = await bringMainIn(s, t);
+    if (note) s.pending.push(note);
+  }
   s.pending.push(...s.steers.splice(0));
   const results = (s.results ??= []).splice(0);
   const notes = s.pending.splice(0);
@@ -511,12 +517,13 @@ async function finish(s: SessionData, t: TaskSpec, summary: string) {
     addStep({ ...ref(s), kind: 'merge', text: `Main changed the same lines in ${sync.conflicts.join(', ')}; the agent is resolving the conflict` });
     return back(`Other tasks merged into main changed the same lines as you in ${sync.conflicts.join(', ')}. Main is now merged into your branch and those files contain conflict markers: the part between <<<<<<< and ======= is yours, the part between ======= and >>>>>>> is main's. Resolve every conflict with edit_file so both tasks' work is kept, remove all markers, run the whole test suite, then call finish again.\n\n${conflictHunks(dir, sync.conflicts)}`);
   }
-  const marked = listFiles(dir).filter((f) => hasMarkers(readFile(dir, f) ?? ''));
+  const marked = ['package.json', 'package-lock.json', '.gitignore', ...listFiles(dir)].filter((f) => hasMarkers(readFile(dir, f) ?? ''));
   if (marked.length) return back(`These files still contain conflict markers: ${marked.join(', ')}. Resolve them, run the whole test suite, then finish.`);
   if (sync.changed) {
     // Main had new work from other tasks: the merged result must pass too.
     const out = await perform(s, t, dir, { type: 'test' });
     if (!s.testOk) return back(`Main had new work from other tasks, now merged into your branch, and the whole suite no longer passes. Fix it, run the tests, then finish.\n${out}`);
+    await commitAll(dir, AGENT, `${t.title}: update package-lock.json`);   // npm may have regenerated it
   }
   let reviewed = false;
   if (reviewOn() && (s.reviews ?? 0) < 2) {
@@ -544,7 +551,27 @@ async function finish(s: SessionData, t: TaskSpec, summary: string) {
   addStep({ ...ref(s), kind: 'merge', text: `${reviewed ? 'Reviewed and merged' : 'Merged'} task/${t.id} into main`, commit: m.commit });
   setTaskState(t.id, { status: 'done', note: undefined });
   setSession(s.id, { state: 'done', summary });
+  for (const st of taskState().values()) {
+    const other = st.taskId !== t.id && st.status === 'running' && st.owner.kind === 'agent' ? load(st.sessionId) : null;
+    if (other) { other.mainMoved = true; save(other); }
+  }
   schedule();
+}
+
+// Merge main into a running task right away, so overlaps with work that just merged show up while they are
+// small. Dependency files are combined automatically; code conflicts go to the agent with each conflicting part.
+async function bringMainIn(s: SessionData, t: TaskSpec): Promise<string> {
+  const dir = worktreeDir(t.id);
+  const sync = await syncMain(t.id).catch((e: Error) => { console.error(`Could not bring main into ${t.id}: ${e.message}`); return null; });
+  if (!sync?.changed) return '';
+  s.testOk = false;
+  if (!sync.conflicts.length) {
+    addStep({ ...ref(s), kind: 'merge', text: `Brought main into task/${t.id} (other tasks' finished work)` });
+    return "Other tasks finished and merged into main; their work is now merged into your branch too. Check that your code still fits with it, and run the whole test suite before finishing.";
+  }
+  s.conflicts = (s.conflicts ?? 0) + 1;
+  addStep({ ...ref(s), kind: 'merge', text: `Main changed the same lines in ${sync.conflicts.join(', ')}; the agent is resolving the conflict` });
+  return `Other tasks merged into main changed the same lines as you in ${sync.conflicts.join(', ')}. Main is now merged into your branch and those files contain conflict markers: the part between <<<<<<< and ======= is yours, the part between ======= and >>>>>>> is main's. Resolve every conflict now with edit_file so both tasks' work is kept, remove all markers, then carry on with your task.\n\n${conflictHunks(dir, sync.conflicts)}`;
 }
 
 // Run the project's CLI in a task's folder (or main's): output streams to terminal[taskId] and ends up in a run step.

@@ -25,10 +25,14 @@ export async function initEpoch(freshDoc: boolean) {
   epoch = readFileSync(EPOCH_FILE, 'utf8').trim();
 }
 
-// The current project's push target: its repo (set on Overview, owner/repo), else GITHUB_REMOTE.
+// The current project's push target: its own repo (created with it, or set on Overview as owner/repo), else none.
+// Never a server-wide fallback: a project without a repo must not restore from or push to someone else's
+// (a shared GITHUB_REMOTE once seeded a new project with Hive's own source).
 export function pushRemote(): string {
   const repo = current()?.repo;
-  return repo ? `https://github.com/${repo}.git` : process.env.GITHUB_REMOTE?.trim() ?? '';
+  if (!repo) return '';
+  // owner/repo from the API; tests set a local bare repo path directly.
+  return /^[\w.-]+\/[\w.-]+$/.test(repo) ? `https://github.com/${repo}.git` : repo;
 }
 
 // A token that can push the current project's repo without a request: a signed-in member's (owner first), else GITHUB_TOKEN.
@@ -44,12 +48,12 @@ export function projectToken(): string | undefined {
 // Every variable the server reads (names only ever leave the server, never values).
 export const ENV_NAMES = [
   'LLM_PROVIDER', 'LLM_API_KEY', 'LLM_BASE_URL', 'AGENT_MODEL', 'PLANNER_MODEL', 'ANTHROPIC_API_KEY',
-  'MAX_PARALLEL', 'MAX_STEPS', 'GITHUB_REMOTE', 'GITHUB_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'PORT',
+  'MAX_PARALLEL', 'MAX_STEPS', 'GITHUB_TOKEN', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'PORT',
   'DAYTONA_API_KEY', 'DAYTONA_API_URL', 'DAYTONA_TARGET', 'OPENCODE_URL', 'CHROME_PATH', 'VISION_MODEL',
   'AGENT_MAX_TOKENS', 'AGENT_CONTEXT_CHARS', 'LLM_EXTRA_BODY', 'LLM_CONCURRENCY', 'TEST_TIMEOUT_S', 'REVIEW', 'NPM_ALLOW', 'AGENT_VISION',
 ];
 // Read per request; the rest need a restart.
-const LIVE = new Set(['GITHUB_REMOTE', 'GITHUB_TOKEN', 'AGENT_MAX_TOKENS', 'AGENT_CONTEXT_CHARS', 'REVIEW', 'NPM_ALLOW']);
+const LIVE = new Set(['GITHUB_TOKEN', 'AGENT_MAX_TOKENS', 'AGENT_CONTEXT_CHARS', 'REVIEW', 'NPM_ALLOW']);
 
 // Only the machine running the server may change .env: a LAN visitor who could set LLM_BASE_URL could capture the key.
 const isLocal = (req: Request) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '');
