@@ -12,6 +12,8 @@ export interface GenerateOptions {
 
 export const provider = (process.env.LLM_PROVIDER || 'openai').toLowerCase();
 export const models = { agent: '', planner: '' };
+// The default for OpenAI-compatible providers (Luminal): agents and the planner both use it unless overridden.
+export const DEFAULT_OPENAI_MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash';
 
 // A model that can look at screenshots (the goal check): VISION_MODEL, else the planner with Anthropic (Claude sees
 // images). Empty means screenshots are still taken and shown to people, but the planner judges from text.
@@ -32,19 +34,15 @@ export async function initModels() {
     models.planner ||= 'claude-haiku-5-5';
   } else if (!baseUrl() || !process.env.LLM_API_KEY) {
     configError = 'Set LLM_BASE_URL and LLM_API_KEY in .env (or LLM_PROVIDER=fake for scripted agents).';
-  } else if (!models.agent || !models.planner) {
+  } else {
+    models.agent ||= DEFAULT_OPENAI_MODEL;
+    models.planner ||= DEFAULT_OPENAI_MODEL;
+    // Only a check: say so when the provider doesn't list the chosen model, but still use it.
     try {
       const res = await fetch(`${baseUrl()}/models`, { headers: { Authorization: `Bearer ${process.env.LLM_API_KEY}` } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const ids: string[] = ((await res.json()) as { data?: { id: string }[] }).data?.map((m) => m.id) ?? [];
-      console.log(`Models available: ${ids.join(', ')}`);
-      const find = (re: RegExp) => ids.find((id) => re.test(id));
-      models.agent ||= find(/deepseek/i) ?? find(/glm/i) ?? ids[0] ?? '';
-      models.planner ||= find(/glm.*flash/i) ?? find(/glm/i) ?? models.agent;
-      if (!models.agent) configError = 'The provider listed no models; set AGENT_MODEL and PLANNER_MODEL in .env.';
-    } catch (e) {
-      configError = `Could not list models at LLM_BASE_URL (${(e as Error).message}); set AGENT_MODEL and PLANNER_MODEL in .env.`;
-    }
+      const ids: string[] = res.ok ? ((await res.json()) as { data?: { id: string }[] }).data?.map((m) => m.id) ?? [] : [];
+      for (const m of new Set([models.agent, models.planner])) if (ids.length && !ids.includes(m)) console.log(`Warning: LLM_BASE_URL does not list ${m}`);
+    } catch { /* the provider may not offer /models */ }
   }
   if (configError) console.log(`LLM not configured: ${configError}`);
   console.log(`LLM provider ${provider}: agent=${models.agent || '-'} planner=${models.planner || '-'}`);
